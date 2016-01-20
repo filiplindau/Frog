@@ -12,7 +12,30 @@ from SimulatePulse import SimulatedSHGFrogTrace
 
 class FrogCalculation(object):
     def __init__(self):
-        pass
+        self.Esignal_w = None
+        self.Esignal_t = None
+    
+    def initSignalField(self, l0, dl, l_start, l_stop, n_l, t_start, t_stop, n_t):
+        """ Initiate signal field with parameters:
+        l0: central wavelength
+        dl: spectral width, FWHM
+        l_start: starting wavelength in spectrum
+        l_stop: final wavelength in spectrum
+        n_l: number of points in spectrum        
+        """
+        c = 299792458.0
+        w0 = 2*np.pi*c/l0
+        dw = w0*dl/l0
+        dt_fwhm = 0.441/dw
+        
+        l_spectrum = np.linspace(l_start, l_stop, n_l)
+        w_spectrum = 2*np.pi*c/l_spectrum
+        
+        E_sig_w = np.exp(-4*np.log(2)*(w_spectrum-w0)**2/dw**2)
+        
+        t = np.linspace(t_start, t_stop, n_t)
+        ph = 0.0
+        self.Et = np.exp(-4*np.log(2)*t**2/dt_fwhm**2 + 1j*w0*t + ph)
 
 if __name__ == '__main__':
     tspan = 0.2e-12
