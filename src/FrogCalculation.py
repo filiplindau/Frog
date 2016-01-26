@@ -41,14 +41,17 @@ class FrogCalculation(object):
         dt_fwhm = 0.441/dw  # Pulse duration
         
         self.l_vec = np.linspace(l_start, l_stop, n_l)
-        w_spectrum = 2*np.pi*c/l_vec
+        w_spectrum = 2*np.pi*c/self.l_vec
         
         w_res = np.abs(w_spectrum[1]-w_spectrum[0])     # Spectrometer resolution
         t_span = 2*np.pi/w_res
         t_res = np.abs((tau_stop-tau_start)/n_tau)
-        n_t = np.int(t_span/t_res)
+        f_max = (w_spectrum[-1]-w_spectrum[0])/(2*np.pi)
+        t_res = 1/(2*f_max)
+        n_t = np.int(t_span/t_res)+1
+        logging.info(''.join(('t_res=', str(t_res), ', n_t=',str(n_t))))
         
-        self.tau_vec = np.linspace(-tau_start, tau_stop, n_tau)
+        self.tau_vec = np.linspace(tau_start, tau_stop, n_tau)
     
         root.info(''.join(('t_span ', str(t_span))))
         root.info(''.join(('t_res ', str(t_res))))
@@ -58,12 +61,21 @@ class FrogCalculation(object):
         ph = 0.0
         self.Et = np.exp(-4*np.log(2)*self.t**2/dt_fwhm**2 + 1j*w0*self.t + ph)
         
-    def generateEsig_t_tau(self, tauVec):
-        Et_mat = np.tile(self.Et, (tauVec.shape[0],1))
-        Et_mat_tau = Et_mat[-1,:]       # Address each element inversely with tau stagger
+    def generateEsig_t_tau_SHG(self, tau_vec):
+        dt = self.t[1]-self.t[0]
+        offset_tau = np.rint(tau_vec/dt)
+        Et_mat = np.tile(self.Et, (tau_vec.shape[0],1))
+        Et_mat_tau = np.zeros_like(Et_mat)
+        for ind, offs in enumerate(offset_tau):
+            if offs > 0:
+                Et_mat_tau[ind, offs:] = self.Et[0:-offs]
+            else:
+                # Offs is negative!
+                Et_mat_tau[ind, 0:offs] = self.Et[-offs:]
+        self.Esig_t_tau = Et_mat*Et_mat_tau
         
     def generateEsig_w_tau(self):
-        self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=0)
+        self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1)
 
 if __name__ == '__main__':
     tspan = 0.2e-12
@@ -71,12 +83,14 @@ if __name__ == '__main__':
     l0 = 380e-9
     lspan = 60e-9
     Nl = 100
-    frog = sp.SimulatedSHGFrogTrace(16384, tau = 50e-15, l0 = 800e-9, tspan=1e-12)
-    frog.pulse.generateGaussianCubicPhase(0.001e30, 0.00002e45)
-    Ifrog = frog.generateSHGTrace(tspan, Nt, l0, lspan, Nl)
+    frogTrace = sp.SimulatedSHGFrogTrace(16384, tau = 50e-15, l0 = 800e-9, tspan=1e-12)
+    frogTrace.pulse.generateGaussianCubicPhase(0.001e30, 0.00002e45)
+    Ifrog = frogTrace.generateSHGTrace(tspan, Nt, l0, lspan, Nl)
     tauVec = np.linspace(-tspan/2.0, tspan/2.0, Nt)
     lVec = l0 + np.linspace(-lspan/2.0, lspan/2.0, Nl)
     X, Y = np.meshgrid(lVec, tauVec)
     
-    frogCalc = FrogCalculation()
-    frogCalc.initPulseField(800e-9, 10e-9, 700e-9, 900e-9, 200, -500e-15, 500e-15, 2000)
+    frog = FrogCalculation()
+    frog.initPulseField(800e-9, 10e-9, 900e-9, 700e-9, 256, -500e-15, 500e-15, 256)
+    frog.generateEsig_t_tau_SHG(frog.tau_vec)
+    frog.generateEsig_w_tau()
