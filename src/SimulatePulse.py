@@ -38,16 +38,21 @@ class SimulatedPulse(object):
         Eenv = np.exp(-t**2/self.tau**2 + 1j*(w0*t + b*t**2 + c*t**3) + ph)
         self.setEt(Eenv, t)
         
-    def getFreqSpectrum(self, Nw = 2048):
+    def getFreqSpectrum(self, Nw = None):
+        if Nw == None:
+            Nw = self.t.shape[0]
         Ew = np.fft.fft(self.Et, Nw)        
 #        w0 = 0*2*np.pi*299792458.0/self.l0
         w = 2*np.pi*np.fft.fftfreq(Nw, d = self.tspan/self.Nt)
         return w, Ew
     
-    def getSpectrogram(self, Nl = 2048):
+    def getSpectrogram(self, Nl = None):
+        if Nl == None:
+            Nl = self.t.shape[0]
         w, Ew = self.getFreqSpectrum(Nl)
         l = 2*np.pi*299792458.0/w
         Il = Ew*Ew.conjugate()
+#        Il = Il/max(Il)
         return l, Il
     
     def setEt(self, Et, t = None):
@@ -55,6 +60,7 @@ class SimulatedPulse(object):
             self.t = t
         self.Et = Et
         self.Nt = Et.shape[0]
+        self.tspan = np.abs(t.max()-t.min())
         self.Et_int = interp1d(self.t, self.Et, kind='linear', bounds_error=False, fill_value=0.0)
         
     def getInterpolatedEt(self, ti):
@@ -73,16 +79,28 @@ class SimulatedSHGFrogTrace(object):
         Et = self.pulse.getInterpolatedEt(t)
         Ifrog = []
         
+        signalPulse.setEt(Et*Et, t)
+        l, Il = signalPulse.getSpectrogram(t.shape[0])
+        lrange_ind = [np.argmin(np.abs(l-lVec[0])), np.argmin(np.abs(l-lVec[-1]))] 
+        lstart_ind = min(lrange_ind)
+        lstop_ind = max(lrange_ind)
+        dl_ind = np.int((lstop_ind-lstart_ind)/Nl)
+        
         for tau in tauVec:
             signalPulse.setEt(Et*self.pulse.getInterpolatedEt(t-tau), t)
             l, Il = signalPulse.getSpectrogram(t.shape[0])
-            try:
-                Il_int = interp1d(l, Il, kind='linear', bounds_error=False, fill_value=0.0)
-                Ifrog.append(Il_int(lVec))
-            except Exception, e:
-                print "Error for tau=", tau, ": ", str(e)
-                Il_int = np.zeros(Nl)
-                Ifrog.append(Il_int)
+            Irow = []  
+            for l_i in range(Nl):
+                l_ind = lstart_ind + l_i*dl_ind + range(dl_ind)
+                Irow.append(Il[l_ind].sum())            
+            Ifrog.append(np.array(Irow))
+#             try:
+#                 Il_int = interp1d(l, Il, kind='linear', bounds_error=False, fill_value=0.0)
+#                 Ifrog.append(Il_int(lVec))
+#             except Exception, e:
+#                 print "Error for tau=", tau, ": ", str(e)
+#                 Il_int = np.zeros(Nl)
+#                 Ifrog.append(Il_int)
             
             
         return np.array(Ifrog).real
@@ -96,7 +114,7 @@ if __name__ == '__main__':
     l0 = 380e-9
     lspan = 60e-9
     Nl = 100
-    frog = SimulatedSHGFrogTrace(16384, tau = 50e-15, l0 = 800e-9, tspan=1e-12)
+    frog = SimulatedSHGFrogTrace(16384, tau = 50e-15, l0 = 800e-9, tspan=2e-12)
     frog.pulse.generateGaussianCubicPhase(0.001e30, 0.00002e45)
     Ifrog = frog.generateSHGTrace(tspan, Nt, l0, lspan, Nl)
     tauVec = np.linspace(-tspan/2.0, tspan/2.0, Nt)
