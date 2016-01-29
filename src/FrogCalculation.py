@@ -251,7 +251,10 @@ class FrogCalculation(object):
         
         Output: 
         self.Esig_t_tau, a n_tau x n_t matrix where each row is Esig(t,tau)
-        '''        
+        '''      
+        root.debug('Generating new Esig_t_tau from SHG')  
+        t0 = time.clock()
+
         Et_mat = np.tile(self.Et, (self.tau.shape[0],1))    # Repeat Et into a matrix
         Et_mat_tau = np.zeros_like(Et_mat)
         n_e = self.Et.shape[0]
@@ -263,6 +266,7 @@ class FrogCalculation(object):
                 # Offs is negative!
                 Et_mat_tau[ind, 0:n_e+offs] = self.Et[-offs:]
         self.Esig_t_tau = Et_mat*Et_mat_tau
+        root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def generateEsig_w_tau(self):
         root.debug('Generating new Esig_w_tau with fft')
@@ -320,7 +324,7 @@ class FrogCalculation(object):
 
         root.info(''.join(('Interpolating frog trace to ', str(self.tau.shape[0]), 'x', str(self.w.shape[0]))))
         t0 = time.clock()
-        self.I_w_tau = np.maximum(Idata_interp(self.tau, self.w), 0.0)
+        self.I_w_tau = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1)
         root.info(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def runCycleVanilla(self, cycles = 1):

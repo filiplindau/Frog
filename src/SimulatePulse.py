@@ -102,8 +102,8 @@ class SimulatedSHGFrogTrace(object):
 #                 Il_int = np.zeros(Nl)
 #                 Ifrog.append(Il_int)
             
-            
-        return np.array(Ifrog).real
+        Ifrog = np.array(Ifrog).real
+        return Ifrog/Ifrog.max()
     
 if __name__ == '__main__':
     p = SimulatedPulse(2048, tau = 50e-15, l0 = 800e-9, tspan=0.5e-12)
