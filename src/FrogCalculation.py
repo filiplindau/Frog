@@ -246,6 +246,79 @@ class FrogCalculation(object):
         self.Et = np.exp(1j*np.pi/2*np.random.randn(self.t.shape[0]))
         root.info('Finished')
                         
+    def initPulseFieldPerfect(self, t_res, t_span, tau_start, tau_stop):
+        """ Initiate signal field with parameters:
+        t_res: time resolution of the reconstruction
+        t_span: time span covered by the reconstruction
+        tau_start: starting time delay
+        tau_stop: final time delay        
+        
+        Creates the following variables:
+        self.w
+        self.dw
+        self.t
+        self.dt
+        self.tau
+        self.Et        
+        """        
+        N = np.int(t_span/t_res)
+        
+        # Now we calculate the frequency resolution required by the
+        # time span
+        w_res = 2*np.pi/t_span
+
+        # Frequency span is given by the time resolution          
+        f_max = 1/(2*t_res)
+        w_span = f_max*2*2*np.pi
+#        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
+        w_spectrum = np.arange(-w_span/2, -w_span/2+w_res*N, w_res)
+        self.dw = w_res 
+        self.w = w_spectrum
+        
+                
+        # Create time vector
+        self.dt = t_res
+        self.t = np.arange(-t_span/2, -t_span/2+N*t_res, t_res)
+        
+        p = sp.SimulatedSHGFrogTrace(N, tau = 100e-15, l0 = 800e-9, tspan=t_span)
+        p.pulse.generateGaussian()
+        tspan_frog = tau_stop - tau_start
+        Nt = 128
+        l0 = 390e-9
+        lspan = 80e-9
+        Nl = 100
+        Ifrog = p.generateSHGTrace(tspan_frog, Nt, l0, lspan, Nl)
+        
+        # Vector of delay positions
+        # We also store the index of the tau_start and tau_stop
+        # snapped to available time values 
+        tau_start_t = self.t[np.argmin(np.abs(self.t-tau_start))]
+        tau_stop_t = self.t[np.argmin(np.abs(self.t-tau_stop))]
+        n_tau = (tau_stop_t-tau_start_t)/t_res
+#        self.tau_start_ind = np.argmin(np.abs(self.t-tau_start))
+#        self.tau_stop_ind = np.argmin(np.abs(self.t-tau_stop))
+        self.tau_start_ind = np.int(np.round(tau_start_t/self.dt))
+        self.tau_stop_ind = np.int(np.round(tau_stop_t/self.dt))
+        self.tau_stop_ind = np.int(self.tau_start_ind + n_tau)
+        self.tau = self.t[np.argmin(np.abs(self.t-tau_start)) : np.argmin(np.abs(self.t-tau_start))+n_tau]
+    
+        root.info(''.join(('t_span ', str(t_span))))
+        root.info(''.join(('t_res ', str(t_res))))
+        
+        # Finally calculate a gaussian E-field from the 
+        self.Et = p.pulse.Et
+        self.t = p.pulse.t
+
+        tauVec = np.linspace(-tspan_frog/2.0, tspan_frog/2.0, Nt)
+        lVec = l0 + np.linspace(-lspan/2.0, lspan/2.0, Nl)
+#        self.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
+        self.generateEsig_t_tau_SHG()
+        self.I_w_tau = np.abs(np.fft.fft(self.Esig_t_tau, axis = 1))**2
+        
+        self.p = p
+            
+        root.info('Finished')
+                                
     def generateEsig_t_tau_SHG(self):
         ''' Generate the time shifted E-field matrix for the SHG process.
         
@@ -347,25 +420,26 @@ class FrogCalculation(object):
         return G
         
 if __name__ == '__main__':
-    tspan = 0.25e-12
+    tspan = 0.4e-12
     Nt = 128
     l0 = 390e-9
     lspan = 80e-9
     Nl = 100
-    frogTrace = sp.SimulatedSHGFrogTrace(16384, tau = 50e-15, l0 = 800e-9, tspan=1e-12)
+    frogTrace = sp.SimulatedSHGFrogTrace(8000, tau = 50e-15, l0 = 800e-9, tspan=2e-12)
 #    frogTrace.pulse.generateGaussianCubicPhase(0.001e30, 0.00002e45)
 #    frogTrace.pulse.generateGaussianQuadraticPhase(0.01e30)
-    frogTrace.pulse.generateGaussian()
-    Ifrog = frogTrace.generateSHGTrace(tspan, Nt, l0, lspan, Nl)
+#    frogTrace.pulse.generateGaussian()
+#    Ifrog = frogTrace.generateSHGTrace(tspan, Nt, l0, lspan, Nl)
     tauVec = np.linspace(-tspan/2.0, tspan/2.0, Nt)
     lVec = l0 + np.linspace(-lspan/2.0, lspan/2.0, Nl)
     X, Y = np.meshgrid(lVec, tauVec)
     
     frog = FrogCalculation()
 #    frog.initPulseField(800e-9, 10e-9, 1200e-9, 400e-9, 1024, -500e-15, 500e-15, 256)
-    frog.initPulseFieldRandom(0.5e-15, 5e-12, -200e-15, 200e-15)
+#    frog.initPulseFieldRandom(0.25e-15, 2e-12, -200e-15, 200e-15)
+    frog.initPulseFieldPerfect(0.25e-15, 2e-12, -200e-15, 200e-15)
     root.info('Calling condition frog trace')
-    frog.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
+#    frog.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
     
 #     frog.generateEsig_t_tau_SHG()
 #     frog.generateEsig_w_tau()
