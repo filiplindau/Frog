@@ -20,6 +20,7 @@ class SimulatedPulse(object):
     def generateGaussian(self):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.Nt)
         w0 = 2*np.pi*299792458.0/self.l0
+        self.w0 = w0
         ph = 0.0
         Eenv = np.exp(-t**2/self.tau**2 + 1j*w0*t + ph)
         self.setEt(Eenv, t)
@@ -45,11 +46,28 @@ class SimulatedPulse(object):
 #        w0 = 0*2*np.pi*299792458.0/self.l0
         w = 2*np.pi*np.fft.fftfreq(Nw, d = self.tspan/self.Nt)
         return w, Ew
+
+    def getFreqSpectrumShifted(self, Nw = None):
+        if Nw == None:
+            Nw = self.t.shape[0]
+        Ew = np.fft.fft(self.Et*np.exp(-1j*self.w0*self.t), Nw)        
+#        w0 = 0*2*np.pi*299792458.0/self.l0
+        w = self.w0 + 2*np.pi*np.fft.fftfreq(Nw, d = self.tspan/self.Nt)
+        return w, Ew
     
     def getSpectrogram(self, Nl = None):
         if Nl == None:
             Nl = self.t.shape[0]
         w, Ew = self.getFreqSpectrum(Nl)
+        l = 2*np.pi*299792458.0/w
+        Il = Ew*Ew.conjugate()
+#        Il = Il/max(Il)
+        return l, Il
+
+    def getSpectrogramShifted(self, Nl = None):
+        if Nl == None:
+            Nl = self.t.shape[0]
+        w, Ew = self.getFreqSpectrumShifted(Nl)
         l = 2*np.pi*299792458.0/w
         Il = Ew*Ew.conjugate()
 #        Il = Il/max(Il)
@@ -89,6 +107,40 @@ class SimulatedSHGFrogTrace(object):
         for tau in tauVec:
             signalPulse.setEt(Et*self.pulse.getInterpolatedEt(t-tau), t)
             l, Il = signalPulse.getSpectrogram(t.shape[0])
+            Irow = []  
+            for l_i in range(Nl):
+                l_ind = lstart_ind + l_i*dl_ind + range(dl_ind)
+                Irow.append(Il[l_ind].sum())            
+            Ifrog.append(np.array(Irow))
+#             try:
+#                 Il_int = interp1d(l, Il, kind='linear', bounds_error=False, fill_value=0.0)
+#                 Ifrog.append(Il_int(lVec))
+#             except Exception, e:
+#                 print "Error for tau=", tau, ": ", str(e)
+#                 Il_int = np.zeros(Nl)
+#                 Ifrog.append(Il_int)
+            
+        Ifrog = np.array(Ifrog).real
+        return Ifrog/Ifrog.max()
+    
+    def generateSHGTraceSmall(self, tspan, Nt, l0, lspan, Nl):
+        signalPulse = SimulatedPulse(Nt=Nt,l0=l0)
+        tauVec = np.linspace(-tspan/2.0, tspan/2.0, Nt)
+        t = self.pulse.t
+        lVec = l0 + np.linspace(-lspan/2.0, lspan/2.0, Nl)
+        Et = self.pulse.Et
+        Ifrog = []
+        
+        signalPulse.setEt(Et*Et, t)
+        l, Il = signalPulse.getSpectrogramShifted(t.shape[0])
+        lrange_ind = [np.argmin(np.abs(l-lVec[0])), np.argmin(np.abs(l-lVec[-1]))] 
+        lstart_ind = min(lrange_ind)
+        lstop_ind = max(lrange_ind)
+        dl_ind = np.int((lstop_ind-lstart_ind)/Nl)
+        
+        for tau in tauVec:
+            signalPulse.setEt(Et*self.pulse.getInterpolatedEt(t-tau), t)
+            l, Il = signalPulse.getSpectrogramShifted(t.shape[0])
             Irow = []  
             for l_i in range(Nl):
                 l_ind = lstart_ind + l_i*dl_ind + range(dl_ind)

@@ -280,7 +280,7 @@ class FrogCalculation(object):
         self.dt = t_res
         self.t = np.arange(-t_span/2, -t_span/2+N*t_res, t_res)
         
-        p = sp.SimulatedSHGFrogTrace(N, tau = 100e-15, l0 = 800e-9, tspan=t_span)
+        p = sp.SimulatedSHGFrogTrace(10000, tau = 100e-15, l0 = 800e-9, tspan=t_span)
         p.pulse.generateGaussian()
         tspan_frog = t_span
         Nt = N
@@ -318,7 +318,79 @@ class FrogCalculation(object):
         self.p = p
             
         root.info('Finished')
-                                
+                             
+    def initPulseFieldPerfectSmall(self, t_res, N):
+        """ Initiate signal field with parameters:
+        t_res: time resolution of the reconstruction
+        t_span: time span covered by the reconstruction
+        tau_start: starting time delay
+        tau_stop: final time delay        
+        
+        Creates the following variables:
+        self.w
+        self.dw
+        self.t
+        self.dt
+        self.tau
+        self.Et        
+        """        
+        t_span = N*t_res
+        
+        # Now we calculate the frequency resolution required by the
+        # time span
+        w_res = 2*np.pi/t_span
+
+        # Frequency span is given by the time resolution          
+        f_max = 1/(2*t_res)
+        w_span = f_max*2*2*np.pi
+#        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
+        w_spectrum = np.arange(-w_span/2, -w_span/2+w_res*N, w_res)
+        self.dw = w_res 
+        self.w = w_spectrum
+        
+                
+        # Create time vector
+        self.dt = t_res
+        self.t = np.arange(-t_span/2, -t_span/2+N*t_res, t_res)
+        
+        p = sp.SimulatedSHGFrogTrace(N, tau = 100e-15, l0 = 800e-9, tspan=t_span)
+        p.pulse.generateGaussian()
+        tspan_frog = t_span
+        Nt = N
+        l0 = 390e-9
+        lspan = 80e-9
+        Nl = N
+        Ifrog = p.generateSHGTraceSmall(tspan_frog, Nt, l0, lspan, Nl)
+        
+        # Vector of delay positions
+        # We also store the index of the tau_start and tau_stop
+        # snapped to available time values 
+        tau_start_t = self.t[0]
+        tau_stop_t = self.t[-1]
+        n_tau = N
+#        self.tau_start_ind = np.argmin(np.abs(self.t-tau_start))
+#        self.tau_stop_ind = np.argmin(np.abs(self.t-tau_stop))
+        self.tau_start_ind = 0
+        self.tau_stop_ind = N-1
+        self.tau = self.t
+    
+        root.info(''.join(('t_span ', str(t_span))))
+        root.info(''.join(('t_res ', str(t_res))))
+        
+        # Finally calculate a gaussian E-field from the 
+        self.Et = p.pulse.Et
+        self.t = p.pulse.t
+
+        tauVec = np.linspace(-tspan_frog/2.0, tspan_frog/2.0, Nt)
+        lVec = l0 + np.linspace(-lspan/2.0, lspan/2.0, Nl)
+#        self.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
+        self.generateEsig_t_tau_SHG()
+        self.I_w_tau = np.abs(np.fft.fft(self.Esig_t_tau, axis = 1))**2
+        
+        self.p = p
+            
+        root.info('Finished')
+        
     def generateEsig_t_tau_SHG(self):
         ''' Generate the time shifted E-field matrix for the SHG process.
         
@@ -441,7 +513,7 @@ if __name__ == '__main__':
 #    frog.initPulseFieldRandom(0.25e-15, 2e-12, -200e-15, 200e-15)
     dt=800e-9/299792458.0/20
     dt=8e-15
-    frog.initPulseFieldPerfect(dt, 1e-12, -200e-15, 200e-15)
+    frog.initPulseFieldPerfectSmall(dt, 128)
     root.info('Calling condition frog trace')
 #    frog.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
     
