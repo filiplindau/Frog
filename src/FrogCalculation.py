@@ -282,11 +282,11 @@ class FrogCalculation(object):
         
         p = sp.SimulatedSHGFrogTrace(N, tau = 100e-15, l0 = 800e-9, tspan=t_span)
         p.pulse.generateGaussian()
-        tspan_frog = tau_stop - tau_start
-        Nt = 128
+        tspan_frog = t_span
+        Nt = N
         l0 = 390e-9
         lspan = 80e-9
-        Nl = 100
+        Nl = N
         Ifrog = p.generateSHGTrace(tspan_frog, Nt, l0, lspan, Nl)
         
         # Vector of delay positions
@@ -339,6 +339,8 @@ class FrogCalculation(object):
                 # Offs is negative!
                 Et_mat_tau[ind, 0:n_e+offs] = self.Et[-offs:]
         self.Esig_t_tau = Et_mat*Et_mat_tau
+        self.Et_mat = Et_mat
+        self.Et_mat_tau = Et_mat_tau
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def generateEsig_w_tau(self):
@@ -437,7 +439,9 @@ if __name__ == '__main__':
     frog = FrogCalculation()
 #    frog.initPulseField(800e-9, 10e-9, 1200e-9, 400e-9, 1024, -500e-15, 500e-15, 256)
 #    frog.initPulseFieldRandom(0.25e-15, 2e-12, -200e-15, 200e-15)
-    frog.initPulseFieldPerfect(0.25e-15, 2e-12, -200e-15, 200e-15)
+    dt=800e-9/299792458.0/20
+    dt=8e-15
+    frog.initPulseFieldPerfect(dt, 1e-12, -200e-15, 200e-15)
     root.info('Calling condition frog trace')
 #    frog.conditionFrogTrace(Ifrog, lVec[0], lVec[-1], tauVec[0], tauVec[-1])
     
