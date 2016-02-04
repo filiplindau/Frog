@@ -9,7 +9,7 @@ Calculate FROG with carrier frequency removed
 import numpy as np
 
 class SimulatedPulse(object):
-    def __init__(self, N = 128, dt = 10e-15, tau = 50e-15, l0 = 800e-9):
+    def __init__(self, N = 128, dt = 10e-15, l0 = 800e-9, tau = 50e-15):
         self.Et = np.zeros(N, dtype=np.complex)
         self.N = N
         self.tau = tau
@@ -76,13 +76,13 @@ class SimulatedPulse(object):
         return Ets
 
 class SimulatedSHGFrogTrace(object):
-    def __init__(self, N = 128, dt = 10e-15, tau = 50e-15, l0 = 800e-9):
-        self.pulse = SimulatedPulse(N, dt, tau, l0)
+    def __init__(self, N = 128, dt = 10e-15, l0 = 800e-9, tau = 50e-15):
+        self.pulse = SimulatedPulse(N, dt, l0, tau)
         self.l_vec = None
         self.tau_vec = None
         
     def generateSHGTraceDt(self, N, dt, l0):
-        signalPulse = SimulatedPulse(self.pulse.N, self.pulse.dt, self.pulse.tau, self.pulse.l0/2)
+        signalPulse = SimulatedPulse(self.pulse.N, self.pulse.dt, self.pulse.l0/2, self.pulse.tau)
         tspan = N*dt
         self.tau_vec = np.linspace(-tspan/2.0, tspan/2.0, N)
         t = self.pulse.t
@@ -94,8 +94,6 @@ class SimulatedSHGFrogTrace(object):
         l_shift = l0 - (l.max()+l.min())/2
         nl_shift = np.int(l_shift/np.abs(l[1]-l[0]))
         self.l_vec = np.fft.fftshift(l + l_shift)
-        print nl_shift
-#        l_shift=0
         
         shiftVec = np.arange(N) - N/2
         
@@ -125,7 +123,7 @@ if __name__ == '__main__':
     dt = 8e-15
     tau = 100e-15 / (2*np.sqrt(np.log(2)))
     l0 = 800e-9
-    p = SimulatedPulse(N, dt, tau, l0)
+    p = SimulatedPulse(N, dt, l0, tau)
     p.generateGaussianCubicPhase(5e24, 1e40)
     gt = SimulatedSHGFrogTrace()
     gt.pulse = p
