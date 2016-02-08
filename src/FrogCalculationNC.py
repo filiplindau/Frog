@@ -6,6 +6,8 @@ Created on 3 Feb 2016
 
 import numpy as np
 from scipy.interpolate import interp2d
+#from scipy.optimize import minimize_scalar as fmin
+from scipy.optimize import fmin as fmin
 import scipy.interpolate as si
 import sys
 import time
@@ -105,6 +107,8 @@ class FrogCalculation(object):
         
         self.p = p
             
+        self.initShiftInd(N)
+        
         root.info('Finished')
         
     def initPulseFieldGaussian(self, N, t_res, l0, tau_pulse):
@@ -144,7 +148,7 @@ class FrogCalculation(object):
         self.dt = t_res
         self.t = np.linspace(-t_span/2, t_span/2, N)
         
-        p = sp.SimulatedSHGFrogTrace(N, dt, tau = tau_pulse, l0 = l0)
+        p = sp.SimulatedSHGFrogTrace(N, self.dt, tau = tau_pulse, l0 = l0)
         p.pulse.generateGaussian(tau_pulse)
         self.tau_start_ind = 0
         self.tau_stop_ind = N-1
@@ -159,6 +163,8 @@ class FrogCalculation(object):
 
         
         self.p = p
+        
+        self.initShiftInd(N)
             
         root.info('Finished')        
         
@@ -208,8 +214,19 @@ class FrogCalculation(object):
         
         # Finally calculate a gaussian E-field from the 
         self.Et = np.exp(1j*2*np.pi*np.random.rand(N))
-            
-        root.info('Finished')           
+        
+        self.initShiftInd(N)
+        
+        root.info('Finished')        
+        
+    def initShiftInd(self, N):
+        i = np.arange(N*N)   
+        i2 = np.arange(N).repeat(N)
+
+        self.shiftInds = (i+i2-N/2)%N + i2*N
+        self.shiftIndsNeg = (i+i2-N/2)%N + i2*N 
+        self.shiftIndsPos = (-N/2+i-i2)%N + i2*N
+   
         
     def generateEsig_t_tau_SHG(self):
         ''' Generate the time shifted E-field matrix for the SHG process.
@@ -267,11 +284,7 @@ class FrogCalculation(object):
         root.debug('Generating new Esig_outer')  
         t0 = time.clock()
 
-#         N = self.Et.shape[0]
-#         i = np.arange(N*N)   
-#         i2 = np.arange(N).repeat(N)
-# #        shiftInds = (N/2-i-i2)%N + i2*N          
-#         shiftInds = (i+i2-N/2)%N + i2*N
+        N = self.Et.shape[0]
         self.O = np.rot90(np.flipud(np.rot90(self.Esig_t_tau_p)).flatten()[self.shiftInds].reshape(N,N))
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
                 
@@ -281,7 +294,7 @@ class FrogCalculation(object):
         self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1)
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
 
-    def applyIntesityData(self, I_w_tau=None):
+    def applyIntensityData(self, I_w_tau=None):
         root.debug('Applying intensity data from experiment')
         t0 = time.clock()
         if I_w_tau==None:
@@ -316,6 +329,22 @@ class FrogCalculation(object):
         self.P = self.P/np.abs(self.P).max()
         self.G = self.G/np.abs(self.G).max()
         self.Et = self.P
+        root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
+        
+    def updateEt_GP(self):
+        root.debug('Updating Et using GP algorithm')
+        t0 = time.clock()
+        
+        self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
+        self.Esig_t_tau_p = self.Esig_t_tau_p / np.abs(self.Esig_t_tau_p).max() 
+        self.calculateGradZSHG()
+        alpha = fmin(self.funZ, 0.0)
+#        root.debug(''.join(('Minimum found: ', str(alpha.x), ' success ', str(alpha.success)))) 
+        root.debug(''.join(('Minimum found: ', str(alpha))))
+        self.Et = self.Et + alpha*self.dZ
+        self.Et = self.Et/np.abs(self.Et).max()
+        self.P = self.Et
+        self.G = self.Et
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def conditionFrogTrace(self, Idata, l_start, l_stop, tau_start, tau_stop):
@@ -364,10 +393,65 @@ class FrogCalculation(object):
         
         return Idata_i, w_data, tau_data
         
+    def funZ(self, alpha):
+        ''' Calculate the distance metric Z given current Esig, Et and
+        gradient dZdE. Z(E+alpha*dZdE)
+        '''
+        Ea = self.Et+alpha*self.dZ
+        N = Ea.shape[0]
+        Ea_mat = np.tile(Ea, (N,1))    # Repeat Ea into a matrix        
+                  
+        z0 = self.Esig_t_tau_p-Ea_mat*Ea_mat.flatten()[self.shiftIndsNeg].reshape(N,N)
+        Z = np.real((z0*np.conj(z0)).sum())
+        return Z
+        
+        
+        
+    def calculateGradZSHG(self):
+        ''' Calculate the gradient of the Z function (functional distance).
+        '''
+        N = self.Et.shape[0]
+#         i = np.arange(N*N)   
+#         i2 = np.arange(N).repeat(N)
+# #        shiftInds = (N/2-i-i2)%N + i2*N          
+#         self.shiftIndsNeg = (i+i2-N/2)%N + i2*N 
+#         self.shiftIndsPos = (N/2-i-i2)%N + i2*N
+        
+        Et_mat = np.tile(self.Et, (N,1)).flatten()
+        dZre = (-np.conj(self.Esig_t_tau_p.flatten())*Et_mat[self.shiftIndsNeg] + 
+                np.conj(Et_mat)*Et_mat[self.shiftIndsNeg]*np.conj(Et_mat[self.shiftIndsNeg]) -
+                np.conj(self.Esig_t_tau_p.flatten()[self.shiftIndsPos])*Et_mat[self.shiftIndsPos] + 
+                np.conj(Et_mat)*Et_mat[self.shiftIndsPos]*np.conj(Et_mat[self.shiftIndsPos])).reshape(N,N).sum(axis=0)
+                 
+        dZre = np.real(dZre + np.conj(dZre))/(N*N)
+        self.dZ = dZre + 1j*dZre    # Imaginary part is the same
+        
+    def calculateGradZSHG_c(self):
+        ''' Calculate the gradient of the Z function (functional distance).
+        '''
+        N = self.Et.shape[0]
+#         i = np.arange(N*N)   
+#         i2 = np.arange(N).repeat(N)
+# #        shiftInds = (N/2-i-i2)%N + i2*N          
+#         self.shiftIndsNeg = (i+i2-N/2)%N + i2*N 
+#         self.shiftIndsPos = (N/2-i-i2)%N + i2*N
+        
+        Et_mat = np.tile(self.Et, (self.tau.shape[0],1)).flatten()
+        Esig = self.Esig_t_tau_p.flatten() 
+        Et_tau_n_c = np.conj(Et_mat[self.shiftIndsNeg])
+        Et_tau_p_c = np.conj(Et_mat[self.shiftIndsPos])
+        self.dZ = -np.real((Et_mat * np.conj(Et_tau_n_c)*Et_tau_n_c -
+              Esig * Et_tau_n_c +
+              Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
+              Esig[self.shiftIndsPos] * Et_tau_p_c).reshape(N,N).sum(0))/(N*N)
+        
+        
+
     def centerPeakTime(self):
         ind = np.argmax(abs(self.Et))
         shift = self.Et.shape[0]/2 - ind
         self.Et = np.roll(self.Et, shift)
+
         
     def setupVanillaAlgorithm(self):
         self.P = self.Et
@@ -377,8 +461,7 @@ class FrogCalculation(object):
         i = np.arange(N*N)   
         i2 = np.arange(N).repeat(N)
 #        shiftInds = (N/2-i-i2)%N + i2*N          
-        self.shiftInds = (i+i2-N/2)%N + i2*N
-        
+        self.shiftInds = (i+i2-N/2)%N + i2*N        
         
     def runCycleVanilla(self, cycles = 1):
         root.debug('Starting FROG reconstruction cycle using the vanilla algorithm')
@@ -389,7 +472,7 @@ class FrogCalculation(object):
             root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
             self.generateEsig_t_tau_Outer()
             self.generateEsig_w_tau()
-            self.applyIntesityData()
+            self.applyIntensityData()
             self.updateEt_vanilla()
             self.centerPeakTime()            
             G = self.calcReconstructionError()
@@ -422,7 +505,7 @@ class FrogCalculation(object):
             root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
             self.generateEsig_t_tau_Outer()
             self.generateEsig_w_tau()
-            self.applyIntesityData()
+            self.applyIntensityData()
             self.updateEt_SVD(1)
             self.centerPeakTime()            
             G = self.calcReconstructionError()
@@ -435,6 +518,37 @@ class FrogCalculation(object):
         root.debug(''.join((str(cycles/deltaT), ' iterations/s')))
             
         return np.array(er)
+    
+    def setupGPAlgorithm(self):
+        self.initShiftInd(N)
+        self.dZ = None
+        self.P = self.Et
+        self.G = self.Et
+
+        
+    def runCycleGP(self, cycles = 1):
+        root.debug('Starting FROG reconstruction cycle using the GP algorithm')
+        t0 = time.clock()
+        er = []
+        self.setupGPAlgorithm()
+        for c in range(cycles):
+            root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
+            self.generateEsig_t_tau_Outer()
+            self.generateEsig_w_tau()
+            self.applyIntensityData()
+            self.updateEt_GP()
+            self.centerPeakTime()            
+            G = self.calcReconstructionError()
+            root.debug('-------------------------------------------')
+            root.debug(''.join(('Error G = ', str(G))))
+            root.debug('-------------------------------------------')
+            er.append(G)
+        deltaT = time.clock() - t0
+        root.debug(''.join(('Total runtime ', str(deltaT))))
+        root.debug(''.join((str(cycles/deltaT), ' iterations/s')))
+            
+        return np.array(er)
+        
             
     def calcReconstructionError(self):
         I_rec_w_tau = np.real(self.Esig_w_tau*np.conj(self.Esig_w_tau))
