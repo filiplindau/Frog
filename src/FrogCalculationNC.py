@@ -445,7 +445,43 @@ class FrogCalculation(object):
               Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
               Esig[self.shiftIndsPos] * Et_tau_p_c).reshape(N,N).sum(0))/(N*N)
         
+    def dZdE_test(self, Ein, Et):
+        N = Et.shape[0]
         
+        i = np.arange(N*N)   
+        i2 = np.arange(N).repeat(N)
+
+        shiftInds = (i+i2-N/2)%N + i2*N
+        shiftIndsNeg = (i+i2-N/2)%N + i2*N 
+        shiftIndsPos = (-N/2+i-i2)%N + i2*N
+
+        Et_mat = np.tile(Et, (Ein.shape[0],1)).flatten()
+        Esig = Ein.flatten() 
+        Et_tau_p_c = np.conj(Et_mat[shiftIndsNeg])
+        Et_tau_n_c = np.conj(Et_mat[shiftIndsPos])
+        dZ = np.real((Et_mat * np.conj(Et_tau_n_c)*Et_tau_n_c -
+              Esig * Et_tau_n_c +
+              Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
+              Esig[shiftIndsPos] * Et_tau_p_c).reshape(N,N).sum(0))/(N*N)
+        return dZ
+
+    def dZdE_test2(self, Ein, Et):
+        N = Et.shape[0]
+        
+        Esig = Ein
+
+        dZ = np.zeros(N)
+        for t in range(N):
+            T = 0.0
+            for tau in range(N):
+                tp = t - (tau - N/2)
+                if tp >= 0 and tp < N: 
+                    T += (Et[t]*Et[tp] - Esig[t, tau]) * np.conj(Et[tp])
+                tp = t + (tau - N/2)
+                if tp >= 0 and tp < N: 
+                    T += (Et[t]*Et[tp] - Esig[tp, tau]) * np.conj(Et[tp])
+            dZ[t] = T/(N*N)
+        return dZ
 
     def centerPeakTime(self):
         ind = np.argmax(abs(self.Et))
