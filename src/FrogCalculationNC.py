@@ -337,7 +337,7 @@ class FrogCalculation(object):
         
         self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
         self.Esig_t_tau_p = self.Esig_t_tau_p / np.abs(self.Esig_t_tau_p).max() 
-        self.calculateGradZSHG()
+        self.calculateGradZSHG_t()
         alpha = fmin(self.funZ, 0.0)
 #        root.debug(''.join(('Minimum found: ', str(alpha.x), ' success ', str(alpha.success)))) 
         root.debug(''.join(('Minimum found: ', str(alpha))))
@@ -444,6 +444,21 @@ class FrogCalculation(object):
               Esig * Et_tau_n_c +
               Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
               Esig[self.shiftIndsPos] * Et_tau_p_c).reshape(N,N).sum(0))/(N*N)
+
+    def calculateGradZSHG_t(self):
+        ''' Calculate the gradient of the Z function (functional distance).
+        '''
+        N = self.Et.shape[0]
+        
+        Et_mat = np.tile(self.Et, (self.tau.shape[0],1))
+        Esig = self.Esig_t_tau_p 
+        Et_tau_p_c = np.fliplr(np.triu(np.tril(np.fliplr(np.conj(Et_mat.flatten()[self.shiftIndsNeg]).reshape(N,N)), N/2-1), -N/2))
+        Et_tau_n_c = np.triu(np.tril(np.conj(Et_mat.flatten()[self.shiftIndsPos]).reshape(N,N), N/2-1), -N/2)
+        Esig_p = np.fliplr(np.triu(np.tril(np.fliplr(np.conj(Esig.flatten()[self.shiftIndsNeg]).reshape(N,N)), N/2-1), -N/2))
+        self.dZ = np.real((Et_mat * np.conj(Et_tau_n_c)*Et_tau_n_c -
+              Esig * Et_tau_n_c +
+              Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
+              Esig_p * Et_tau_p_c).sum(0))/(N*N)        
         
     def dZdE_test(self, Ein, Et):
         N = Et.shape[0]
@@ -451,18 +466,18 @@ class FrogCalculation(object):
         i = np.arange(N*N)   
         i2 = np.arange(N).repeat(N)
 
-        shiftInds = (i+i2-N/2)%N + i2*N
         shiftIndsNeg = (i+i2-N/2)%N + i2*N 
         shiftIndsPos = (-N/2+i-i2)%N + i2*N
 
-        Et_mat = np.tile(Et, (Ein.shape[0],1)).flatten()
-        Esig = Ein.flatten() 
-        Et_tau_p_c = np.conj(Et_mat[shiftIndsNeg])
-        Et_tau_n_c = np.conj(Et_mat[shiftIndsPos])
+        Et_mat = np.tile(Et, (Ein.shape[0],1))
+        Esig = Ein 
+        Et_tau_p_c = np.fliplr(np.triu(np.tril(np.fliplr(np.conj(Et_mat.flatten()[shiftIndsNeg]).reshape(N,N)), N/2-1), -N/2))
+        Et_tau_n_c = np.triu(np.tril(np.conj(Et_mat.flatten()[shiftIndsPos]).reshape(N,N), N/2-1), -N/2)
+        Esig_p = np.fliplr(np.triu(np.tril(np.fliplr(np.conj(Esig.flatten()[shiftIndsNeg]).reshape(N,N)), N/2-1), -N/2))
         dZ = np.real((Et_mat * np.conj(Et_tau_n_c)*Et_tau_n_c -
               Esig * Et_tau_n_c +
               Et_mat * np.conj(Et_tau_p_c)*Et_tau_p_c -
-              Esig[shiftIndsPos] * Et_tau_p_c).reshape(N,N).sum(0))/(N*N)
+              Esig_p * Et_tau_p_c).sum(0))/(N*N)
         return dZ
 
     def dZdE_test2(self, Ein, Et):
