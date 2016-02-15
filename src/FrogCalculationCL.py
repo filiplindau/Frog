@@ -34,11 +34,43 @@ class FrogCalculation(object):
         
         self.Esignal_w = None
         self.Esignal_t = None
+                
+        self.initCl(useCPU = False)
         
-        self.ctx = cl.create_some_context()
+    def initCl(self, useCPU = False):
+        root.debug('Initializing opencl')
+        pl = cl.get_platforms()
+        d = None
+        v = None
+        root.debug(''.join(('Found ', str(pl.__len__()), ' platforms')))
+        vendorDict = {'amd': 3, 'nvidia': 2, 'intel': 1}
+        if useCPU == False:
+            for p in pl:
+                root.debug(p.vendor.lower())
+                if 'amd' in p.vendor.lower():
+                    vTmp = 'amd'
+                elif 'nvidia' in p.vendor.lower():
+                    vTmp = 'nvidia'
+                else:
+                    vTmp = 'intel'
+                
+                if v == None:
+                    d = p.get_devices()
+                    v = vTmp
+                else:
+                    if vendorDict[vTmp] > vendorDict[v]:
+                        d = p.get_devices()
+                        v = vTmp
+        else:
+            for p in pl:
+                d = p.get_devices(device_type=cl.device_type.CPU)
+                if d != []:
+                    break
+        root.debug(''.join(('Using device ', str(d), ' from ', v)))
+        self.ctx = cl.Context(devices = d)
         self.q = cl.CommandQueue(self.ctx)
         
-        self.progs = FrogClKernels.FrogClKernels(self.ctx) 
+        self.progs = FrogClKernels.FrogClKernels(self.ctx)
         
     def initClBuffers(self):
         mf = cl.mem_flags

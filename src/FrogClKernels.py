@@ -16,7 +16,7 @@ class FrogClKernels(object):
     def initEsigTau(self):        
         Source = """
         #include <pyopencl-complex.h>
-        __kernel void generateEsig_t_tau_SHG(__global cfloat_t *Et, __global cfloat_t *Esig, __global int N){
+        __kernel void generateEsig_t_tau_SHG(__global cfloat_t* Et, __global cfloat_t* Esig, __global int N){
         const int tau_i = get_global_id(0);
         const int t_i = get_global_id(1);
         cfloat_t Etmp = (cfloat_t)(0.0f, 0.0f);
