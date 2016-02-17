@@ -299,7 +299,7 @@ class FrogCalculation(object):
         t0 = time.clock()
         if I_w_tau==None:
             I_w_tau = self.I_w_tau
-        eps = 0.01
+        eps = 0.00
         Esig_mag = np.abs(self.Esig_w_tau)
         self.Esig_w_tau_p = np.zeros_like(self.Esig_w_tau)
         good_ind = np.where(Esig_mag > eps)

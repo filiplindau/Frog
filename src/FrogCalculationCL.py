@@ -28,7 +28,7 @@ f = logging.Formatter("%(asctime)s - %(module)s.   %(funcName)s - %(levelname)s 
 fh = logging.StreamHandler()
 fh.setFormatter(f)
 root.addHandler(fh)
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.CRITICAL)
     
 class FrogCalculation(object):
     def __init__(self):
@@ -164,12 +164,13 @@ class FrogCalculation(object):
             w_start = 2*np.pi*299792458.0/l_start
             w_stop = 2*np.pi*299792458.0/l_stop
             w0 = 2*np.pi*299792458.0/((l_stop+l_start)/2)
-            Idata_i = Idata.copy()
+            Idata_i = np.fliplr(Idata).copy()
+            
         else:
             w_start = 2*np.pi*299792458.0/l_stop
             w_stop = 2*np.pi*299792458.0/l_start
             w0 = 2*np.pi*299792458.0/((l_stop+l_start)/2)
-            Idata_i = np.fliplr(Idata).copy()
+            Idata_i = Idata.copy()
             
         root.debug(''.join(('w_start: ', str(w_start))))
         root.debug(''.join(('w_stop: ', str(w_stop))))
@@ -237,11 +238,11 @@ class FrogCalculation(object):
         
     def updateEt_vanilla(self):
         root.debug('Updating Et using vanilla algorithm')
-        useGPU = True
+        useGPU = False
         t0 = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_w_tau_cla,) , (self.Esig_t_tau_p_cla,) , axes = [1])        
 #         events = transform.enqueue(forward = False)
-        events = self.Esig_t_tau_p_fft.enqueue()
+        events = self.Esig_t_tau_p_fft.enqueue(forward = False)
         for e in events:
             e.wait()
             
@@ -279,8 +280,10 @@ class FrogCalculation(object):
         tic = time.clock()
         Esig_w_tau = self.Esig_w_tau_cla.get()
         I_rec_w_tau = np.real(Esig_w_tau*np.conj(Esig_w_tau))
-        my = self.I_w_tau.max()/I_rec_w_tau.max()
-        G = np.sqrt(((self.I_w_tau-my*I_rec_w_tau)**2).sum()/(I_rec_w_tau.shape[0]*I_rec_w_tau.shape[1]))        
+        I_w_tau = self.I_w_tau_cla.get()
+        my = I_w_tau.max()/I_rec_w_tau.max()
+        root.debug(''.join(('My=', str(my))))
+        G = np.sqrt(((I_w_tau-my*I_rec_w_tau)**2).sum()/(I_rec_w_tau.shape[0]*I_rec_w_tau.shape[1]))        
 #        G = np.sqrt(((self.I_w_tau-my*I_rec_w_tau)**2).sum()/(self.I_w_tau.sum()))
         toc = time.clock()
         root.debug(''.join(('Time spent: ', str(toc-tic))))
@@ -308,10 +311,10 @@ class FrogCalculation(object):
             root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
             self.generateEsig_t_tau_SHG()
             self.generateEsig_w_tau()
+            G = self.calcReconstructionError()
             self.applyIntensityData()
             self.updateEt_vanilla()
-            self.centerPeakTime()            
-            G = self.calcReconstructionError()
+            self.centerPeakTime()                        
             root.debug('-------------------------------------------')
             root.debug(''.join(('Error G = ', str(G))))
             root.debug('-------------------------------------------')

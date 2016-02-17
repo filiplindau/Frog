@@ -23,7 +23,8 @@ class FrogClKernels(object):
             const int t_i = get_global_id(1);
             cfloat_t Etmp = (cfloat_t)(0.0f, 0.0f);
 //            int ind = (t_i+(tau_i-N/2));
-            int ind = (t_i-(tau_i-N/2));
+            int ind = (t_i-(tau_i-N/2)+N)%N;
+//            Esig[t_i + N*tau_i] = cfloat_mul(Et[t_i], Et[ind]);
             
             if (ind >= 0 && ind < N)
             {
@@ -31,7 +32,7 @@ class FrogClKernels(object):
             }
             else
             {
-                Esig[t_i + N*tau_i] = (cfloat_t)(0.0f, 0.0f);
+                Esig[t_i + N*tau_i] = (cfloat_t)(-1.0f, 0.0f);
             }
         }
         """
