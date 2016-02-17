@@ -634,11 +634,11 @@ if __name__ == '__main__':
     l = gt.getWavelengths()
     t = gt.getTimedelays()
     
-    frog = FrogCalculation()
+    frogNC = FrogCalculation()
     
 #    frog.initPulseFieldPerfect(128, dt, 800e-9)
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
-    frog.initPulseFieldRandom(N, dt, l0)
-    frog.conditionFrogTrace(Ifrog, l[0], l[-1], t[0], t[-1])
+    frogNC.initPulseFieldRandom(N, dt, l0)
+    frogNC.conditionFrogTrace(Ifrog, l[0], l[-1], t[0], t[-1])
     
         
