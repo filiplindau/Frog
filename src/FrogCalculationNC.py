@@ -31,6 +31,9 @@ class FrogCalculation(object):
         self.Esignal_w = None
         self.Esignal_t = None
         
+        self.dtype_c = np.complex64
+        self.dtype_r = np.float32
+        
     def initPulseFieldPerfect(self, N, t_res, l0):
         """ Initiate signal field with parameters:
         t_res: time resolution of the reconstruction
@@ -168,7 +171,7 @@ class FrogCalculation(object):
             
         root.info('Finished')        
         
-    def initPulseFieldRandom(self, N, t_res, l0):
+    def initPulseFieldRandom(self, N, t_res, l0, seed = 0):
         """ Initiate signal field with parameters:
         t_res: time resolution of the reconstruction
         N: number of points in time and wavelength axes
@@ -181,7 +184,8 @@ class FrogCalculation(object):
         self.dt
         self.tau
         self.Et        
-        """        
+        """   
+        np.random.seed(seed)     
         t_span = N*t_res
         
         # Now we calculate the frequency resolution required by the
@@ -213,7 +217,7 @@ class FrogCalculation(object):
         root.info(''.join(('t_res ', str(t_res))))
         
         # Finally calculate a gaussian E-field from the 
-        self.Et = np.exp(1j*2*np.pi*np.random.rand(N))
+        self.Et = np.exp(1j*2*np.pi*np.random.rand(N)).astype(self.dtype_c)
         
         self.initShiftInd(N)
         
@@ -291,7 +295,7 @@ class FrogCalculation(object):
     def generateEsig_w_tau(self):
         root.debug('Generating new Esig_w_tau with fft')
         t0 = time.clock()
-        self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1)
+        self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1).astype(self.dtype_c)
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
 
     def applyIntensityData(self, I_w_tau=None):
@@ -309,7 +313,7 @@ class FrogCalculation(object):
     def updateEt_vanilla(self):
         root.debug('Updating Et using vanilla algorithm')
         t0 = time.clock()
-        self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
+        self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1).astype(self.dtype_c)
 #        self.Et = np.trapz(Esig_t_tau_p, self.tau, axis=0)
         self.Et = self.Esig_t_tau_p.sum(axis=0)
         self.Et = self.Et/np.abs(self.Et).max()
@@ -387,7 +391,7 @@ class FrogCalculation(object):
 
         root.info(''.join(('Interpolating frog trace to ', str(self.tau.shape[0]), 'x', str(self.w.shape[0]))))
         t0 = time.clock()
-        self.I_w_tau = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1)
+        self.I_w_tau = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1).astype(self.dtype_r)
 #        self.I_w_tau = np.maximum(Idata_interp(self.tau, self.w), 0.0)
         root.info(''.join(('Time spent: ', str(time.clock()-t0))))
         

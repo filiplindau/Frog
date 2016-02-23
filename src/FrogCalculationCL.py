@@ -6,6 +6,7 @@ Created on 9 Feb 2016
 import numpy as np
 import pyopencl as cl
 import pyopencl.array as cla
+import matplotlib.pyplot as mpl
 from gpyfft.fft import FFT
 from scipy.interpolate import interp2d
 #from scipy.optimize import minimize_scalar as fmin
@@ -32,6 +33,12 @@ root.setLevel(logging.CRITICAL)
     
 class FrogCalculation(object):
     def __init__(self):
+        self.useGPU = True
+        self.rollFFT = True # There is a peculiarity in the fft calculation of a set of vectors
+                        # so that the first fft end up in the end... Set this switch to roll
+                        # back the last line of the Esig_w_tau fft matrix
+        
+        
         self.dtype_c = np.complex64
         self.dtype_r = np.float32        
         
@@ -98,8 +105,23 @@ class FrogCalculation(object):
         
         self.Esig_t_tau_p_fft = FFT(self.ctx, self.q, (self.Esig_w_tau_cla,) , (self.Esig_t_tau_p_cla,) , axes = [1])
         
+        self.initClBuffersGP()
+    
+    def initClBuffersGP(self):
+        # Gradient vector for the functional distance in the generalized projection
+        self.dZ_cla = cla.zeros(self.q, (self.N), self.dtype_c)
         
-    def initPulseFieldRandom(self, N, t_res, l0):
+        # Vector for intermediate results for the error minimization calculation
+        self.X0_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X1_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X2_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X3_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X4_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        
+        self.Esig_t_tau_norm = np.zeros((self.N, self.N), self.dtype_r)
+        self.Esig_t_tau_norm_cla = cla.to_device(self.q, self.Esig_t_tau_norm)
+        
+    def initPulseFieldRandom(self, N, t_res, l0, seed = 0):
         """ Initiate signal field with parameters:
         t_res: time resolution of the reconstruction
         N: number of points in time and wavelength axes
@@ -112,7 +134,8 @@ class FrogCalculation(object):
         self.dt
         self.tau
         self.Et        
-        """        
+        """       
+        np.random.seed(seed)
         self.N = np.int32(N)
         
         t_span = N*t_res
@@ -147,10 +170,64 @@ class FrogCalculation(object):
         
         # Finally calculate a gaussian E-field from the 
         self.Et = (np.exp(1j*2*np.pi*np.random.rand(N))).astype(self.dtype_c)
-                
-        
+                        
         root.info('Finished')     
 
+    def initPulseFieldGaussian(self, N, t_res, l0, tau_pulse):
+        """ Initiate signal field with parameters:
+        t_res: time resolution of the reconstruction
+        N: number of points in time and wavelength axes
+        l0: center wavelength
+        
+        Creates the following variables:
+        self.w
+        self.dw
+        self.t
+        self.dt
+        self.tau
+        self.Et        
+        """        
+        t_span = N*t_res
+        self.N = np.int32(N)
+        
+        # Now we calculate the frequency resolution required by the
+        # time span
+        w_res = 2*np.pi/t_span
+
+        # Frequency span is given by the time resolution          
+        f_max = 1/(2*t_res)
+        w_span = f_max*2*2*np.pi
+        
+        c = 299792458.0
+        w0 = 2*np.pi*c/l0
+#        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
+        w_spectrum = np.linspace(-w_span/2, -w_span/2+w_res*N, N)
+        self.dw = w_res 
+        self.w = w_spectrum
+        self.w0 = w0
+        
+                
+        # Create time vector
+        self.dt = t_res
+        self.t = np.linspace(-t_span/2, t_span/2, N)
+        
+        p = sp.SimulatedSHGFrogTrace(N, self.dt, tau = tau_pulse, l0 = l0)
+        p.pulse.generateGaussian(tau_pulse)
+        self.tau_start_ind = 0
+        self.tau_stop_ind = N-1
+        self.tau = self.t
+    
+        root.info(''.join(('t_span ', str(t_span))))
+        root.info(''.join(('t_res ', str(t_res))))
+        
+        # Finally calculate a gaussian E-field from the 
+        self.Et = (np.abs(p.pulse.Et) * np.exp(1j*2*np.pi*np.random.rand(N))).astype(self.dtype_c)
+        self.t = p.pulse.t
+
+        self.p = p
+        
+        root.info('Finished')  
+        
     def conditionFrogTrace(self, Idata, l_start, l_stop, tau_start, tau_stop):
         ''' Take the measured intensity data and interpolate it to the
         internal w, tau grid.
@@ -164,13 +241,13 @@ class FrogCalculation(object):
             w_start = 2*np.pi*299792458.0/l_start
             w_stop = 2*np.pi*299792458.0/l_stop
             w0 = 2*np.pi*299792458.0/((l_stop+l_start)/2)
-            Idata_i = np.fliplr(Idata).copy()
+            Idata_i = Idata.copy()
             
         else:
             w_start = 2*np.pi*299792458.0/l_stop
             w_stop = 2*np.pi*299792458.0/l_start
             w0 = 2*np.pi*299792458.0/((l_stop+l_start)/2)
-            Idata_i = Idata.copy()
+            Idata_i = np.fliplr(Idata).copy()            
             
         root.debug(''.join(('w_start: ', str(w_start))))
         root.debug(''.join(('w_stop: ', str(w_stop))))
@@ -194,6 +271,10 @@ class FrogCalculation(object):
         t0 = time.clock()
         self.I_w_tau = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1).astype(self.dtype_r)
 #        self.I_w_tau = np.maximum(Idata_interp(self.tau, self.w), 0.0)
+
+        if self.rollFFT == True:
+            self.I_w_tau = np.roll(self.I_w_tau, 1, axis=0) 
+
         root.info(''.join(('Time spent: ', str(time.clock()-t0))))
         
         return Idata_i, w_data, tau_data
@@ -217,12 +298,29 @@ class FrogCalculation(object):
         ''' Generate the fft of the time shifted E(t)
         '''
         root.debug('Generating Esig_w_tau')
+        rollFFT = False  # There is a peculiarity in the fft calculation of a set of vectors
+                        # so that the first fft end up in the end... Set this switch to roll
+                        # back the last line of the Esig_w_tau fft matrix
         tic = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_t_tau_cla,) , (self.Esig_w_tau_cla,) , axes = [1])        
 #         events = transform.enqueue()
-        events = self.Esig_w_tau_fft.enqueue()
-        for e in events:
-            e.wait()
+        if self.useGPU == True:
+            events = self.Esig_w_tau_fft.enqueue()
+            for e in events:
+                e.wait()
+#         if self.rollFFT == True:
+#             krn = self.progs.progs['rollEsigWTau'].rollEsigWTau
+#             krn.set_scalar_arg_dtypes((None, np.int32))
+#             krn.set_args(self.Esig_w_tau_cla.data, self.N)
+#             ev = cl.enqueue_nd_range_kernel(self.q, krn, [self.Esig_w_tau.shape[0]], None)
+#             ev.wait()
+        else:
+            Esig_t_tau = self.Esig_t_tau_cla.get()
+            if self.rollFFT == True:
+                Esig_w_tau = np.roll(np.fft.fft(Esig_t_tau, axis=1).astype(self.dtype_c), 1, axis=0)
+            else:
+                Esig_w_tau = np.fft.fft(Esig_t_tau, axis=1).astype(self.dtype_c)
+            self.Esig_w_tau_cla.set(Esig_w_tau.copy())
         toc = time.clock()
         root.debug(''.join(('Time spent: ', str(toc-tic))))
         
@@ -238,7 +336,6 @@ class FrogCalculation(object):
         
     def updateEt_vanilla(self):
         root.debug('Updating Et using vanilla algorithm')
-        useGPU = False
         t0 = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_w_tau_cla,) , (self.Esig_t_tau_p_cla,) , axes = [1])        
 #         events = transform.enqueue(forward = False)
@@ -246,7 +343,7 @@ class FrogCalculation(object):
         for e in events:
             e.wait()
             
-        if useGPU == True:
+        if self.useGPU == True:
             krn = self.progs.progs['updateEtVanillaSum'].updateEtVanillaSum
             krn.set_scalar_arg_dtypes((None, None, np.int32))
             krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
@@ -267,7 +364,146 @@ class FrogCalculation(object):
 
         
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
+        
+    def gradZSHG_naive(self):
+        root.debug('Calculating dZ using for loops')
+        Et = self.Et_cla.get()
+        Esigp = self.Esig_t_tau_p_cla.get()
+        dZ = np.zeros_like(Et)
+        N = Esigp.shape[0]
+        sz = N*N
+        for t0 in range(N):
+            T = 0.0 + 1j*0.0
+            for tau in range(N):
+                tp = t0 - (tau-N/2)
+                if tp >=0 and tp < N:
+                    T += (Et[t0]*Et[tp] - Esigp[tau, t0])*np.conj(Et[tp])
+                tp = t0 + (tau-N/2)
+                if tp >=0 and tp < N:
+                    T += (Et[t0]*Et[tp] - Esigp[tau, tp])*np.conj(Et[tp])
+            dZ[t0] = -T/sz
+        self.dZ_cla.set(dZ.copy())
 
+    def gradZSHG_gpu(self):
+        root.debug('Calculating dZ using gpu')
+        krn = self.progs.progs['gradZSHG'].gradZSHG
+        krn.set_scalar_arg_dtypes((None, None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.dZ_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+        ev.wait()
+        
+    def minZerrKernSHG_naive(self):
+        Et0 = self.Et_cla.get()
+        Esig = self.Esig_t_tau_p_cla.get()
+        dZ = self.dZ_cla.get()
+        N = Esig.shape[0]
+        
+        mx = 0.0
+        X = np.zeros(5)
+        
+        for t in range(N):
+            for tau in range(N):
+                T = np.abs(Esig[tau, t])**2
+                if mx < T:
+                    mx = T
+                tp = t-(tau-N/2)
+                if tp >=0 and tp < N:
+                    dZdZ = dZ[t]*dZ[tp]
+                    dZE = dZ[t]*Et0[tp] + dZ[tp]*Et0[t]
+                    DEsig = Et0[t]*Et0[tp] - Esig[tau, t]
+                    
+                    X[0] += np.abs(dZdZ)**2
+                    X[1] += 2.0*np.real(dZE*np.conj(dZdZ))
+                    X[2] += 2.0*np.real(DEsig*np.conj(dZdZ)) + np.abs(dZE)**2
+                    X[3] += 2.0*np.real(DEsig*np.conj(dZE))
+                    X[4] += np.abs(DEsig)**2
+        T = N*N*mx
+        X[0] = X[0]/T
+        X[1] = X[1]/T
+        X[2] = X[2]/T
+        X[3] = X[3]/T
+        X[4] = X[4]/T
+        
+        root.debug(''.join(('Esig_t_tau_p norm max: ', str(mx))))
+        
+        return X
+
+    def minZerrKernSHG_gpu(self):
+        krn = self.progs.progs['minZerrSHG'].minZerrSHG
+        krn.set_scalar_arg_dtypes((None, None, None, None, None, None, None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.dZ_cla.data, 
+                     self.X0_cla.data, self.X1_cla.data, self.X2_cla.data, self.X3_cla.data, self.X4_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+        ev.wait()
+        
+        Esig_t_tau = self.Esig_t_tau_p_cla.get()
+        mx = ((Esig_t_tau*Esig_t_tau.conj()).real).max() * self.N*self.N
+        X0 = cla.sum(self.X0_cla, queue=self.q).get() / mx
+        X1 = cla.sum(self.X1_cla, queue=self.q).get() / mx
+        X2 = cla.sum(self.X2_cla, queue=self.q).get() / mx
+        X3 = cla.sum(self.X3_cla, queue=self.q).get() / mx
+        X4 = cla.sum(self.X4_cla, queue=self.q).get() / mx
+        
+        root.debug(''.join(('X0=', str(X0), ', type ', str(type(X0)))))
+        
+        root.debug(''.join(('Poly: ', str(X4), ' x^4 + ', str(X3), ' x^3 + ', str(X2), ' x^2 + ', str(X1), ' x + ', str(X0))))
+        # Polynomial in dZ (expansion of differential)
+        X = np.array([X0, X1, X2, X3, X4]).astype(np.double)
+        
+        root.debug(''.join(('Esig_t_tau_p norm max: ', str(mx/(self.N*self.N)))))
+        
+        return X       
+     
+    def updateEt_gp(self):
+        root.debug('Updating Et using GP algorithm')
+        tic = time.clock()
+ 
+        events = self.Esig_t_tau_p_fft.enqueue(forward = False)
+        for e in events:
+            e.wait()
+       
+        # Calculate the gradient of the functional distance:
+        if self.useGPU == True:
+            self.gradZSHG_gpu()
+        else:
+            self.gradZSHG_naive()
+        
+        # Calculate error minimization polynomial
+        if self.useGPU == True:
+            p1 = self.minZerrKernSHG_gpu()
+        else:
+            p1 = self.minZerrKernSHG_naive()
+        root.debug(''.join(('Poly: ', str(p1[4]), ' x^4 + ', str(p1[3]), ' x^3 + ', str(p1[2]), ' x^2 + ', str(p1[1]), ' x + ', str(p1[0]))))
+        p = np.polyder(p1)
+        r = np.roots(p)
+        X = r[np.abs(r.imag)<1e-9].real
+        root.debug(''.join(('Real roots: ', str(X))))
+        
+        Z1 = np.polyval(p1, X)
+        minZInd = Z1.argmin() 
+        Z = np.maximum(3e-16*X[-1], Z1[minZInd])
+
+        Z = np.sqrt(Z)
+        X = X[minZInd].astype(self.dtype_r)
+
+        # Update Et
+        if self.useGPU == True:
+            krn = self.progs.progs['updateEtGP'].updateEtGP
+            krn.set_scalar_arg_dtypes((None, None, self.dtype_r, np.int32))
+            krn.set_args(self.Et_cla.data, self.dZ_cla.data, X, self.N)
+            ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+            ev.wait()
+        else:
+            root.debug(''.join(('Moving distance X=', str(X))))
+            Et = self.Et_cla.get()
+            Et_new = Et + X*self.dZ_cla.get()
+            self.Et_cla.set(Et_new.copy())
+        
+        toc = time.clock()
+        root.debug(''.join(('Time spent: ', str(toc-tic))))
+        
+        return Z
+        
     def centerPeakTime(self):
         Et = self.Et_cla.get()
         ind = np.argmax(abs(Et))
@@ -299,6 +535,19 @@ class FrogCalculation(object):
         toc=time.clock()
         root.debug(''.join(('Time spent: ', str(toc-tic))))
                   
+    def getTraceAbs(self):
+        self.centerPeakTime()
+        return np.abs(self.Et_cla.get())
+    
+    def getTracePhase(self):
+        self.centerPeakTime()
+        Et = self.Et_cla.get()
+        ph0 = np.angle(Et[Et.shape[0]/2])
+        return np.angle(Et)-ph0
+    
+    def getT(self):
+        return self.t
+                  
     def setupVanillaAlgorithm(self):
         pass
                   
@@ -314,7 +563,7 @@ class FrogCalculation(object):
             G = self.calcReconstructionError()
             self.applyIntensityData()
             self.updateEt_vanilla()
-            self.centerPeakTime()                        
+#             self.centerPeakTime()                        
             root.debug('-------------------------------------------')
             root.debug(''.join(('Error G = ', str(G))))
             root.debug('-------------------------------------------')
@@ -324,7 +573,49 @@ class FrogCalculation(object):
         root.debug(''.join((str(cycles/deltaT), ' iterations/s')))
         print ''.join((str(cycles/deltaT), ' iterations/s'))
         return np.array(er)
+
+    def setupGPAlgorithm(self):
+        pass
                   
+    def runCycleGP(self, cycles = 1):
+        root.debug('Starting FROG reconstruction cycle using the GP algorithm')
+        t0 = time.clock()
+        er = []
+        self.setupGPAlgorithm()
+        for c in range(cycles):
+            root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
+            self.generateEsig_t_tau_SHG()
+            self.generateEsig_w_tau()
+            G = self.calcReconstructionError()
+            self.applyIntensityData()
+            self.updateEt_gp()
+#             self.centerPeakTime()                        
+            root.debug('-------------------------------------------')
+            root.debug(''.join(('Error G = ', str(G))))
+            root.debug('-------------------------------------------')
+            er.append(G)
+        deltaT = time.clock() - t0
+        root.debug(''.join(('Total runtime ', str(deltaT))))
+        root.debug(''.join((str(cycles/deltaT), ' iterations/s')))
+        print ''.join((str(cycles/deltaT), ' iterations/s'))
+        return np.array(er)       
+    
+    def runComplete(self):
+        tic = time.clock()
+        self.runCycleVanilla(30) 
+        er=self.runCycleGP(30)
+        oldEr = np.min(er)
+        newEr = oldEr - 1e-6
+        epochs = 0
+        while oldEr-newEr > 1e-6 and epochs<20:
+            oldEr = newEr
+            er=self.runCycleGP(30)
+            newEr = np.min(er)
+            epochs += 1
+            print "Epoch ", epochs, ", error ", newEr
+        print "Epochs: ", epochs
+        toc = time.clock()
+        print "Total reconstruction time ", toc-tic, " s"
                     
 if __name__ == '__main__':    
     N = 256
@@ -344,6 +635,7 @@ if __name__ == '__main__':
     
 #    frog.initPulseFieldPerfect(128, dt, 800e-9)
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
+
     frog.initPulseFieldRandom(N, dt, l0)
     frog.conditionFrogTrace(Ifrog, l[0], l[-1], t[0], t[-1])
     frog.initClBuffers()
