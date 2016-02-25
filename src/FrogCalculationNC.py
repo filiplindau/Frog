@@ -632,7 +632,7 @@ if __name__ == '__main__':
     
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
     p.generateGaussianCubicPhase(5e24, 3e39)
-    gt = sp.SimulatedSHGFrogTrace(N, dt, l0)
+    gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
     Ifrog = gt.generateSHGTraceDt(N, dt, 400e-9)
     l = gt.getWavelengths()

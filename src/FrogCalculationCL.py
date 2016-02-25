@@ -9,6 +9,7 @@ import pyopencl.array as cla
 import matplotlib.pyplot as mpl
 from gpyfft.fft import FFT
 from scipy.interpolate import interp2d
+from scipy.signal import medfilt2d
 #from scipy.optimize import minimize_scalar as fmin
 from scipy.optimize import fmin as fmin
 import scipy.interpolate as si
@@ -279,6 +280,9 @@ class FrogCalculation(object):
         
         return Idata_i, w_data, tau_data
     
+    def filterFrogTrace(self, Idata, kernel=5, thr=0.1):
+        Idata_f = medfilt2d(Idata, kernel)
+    
     def generateEsig_t_tau_SHG(self):
         ''' Generate the time shifted E-field matrix for the SHG process.
         
@@ -288,6 +292,21 @@ class FrogCalculation(object):
         root.debug('Generating new Esig_t_tau from SHG')  
         t0 = time.clock()
         krn = self.progs.progs['generateEsig_t_tau_SHG'].generateEsig_t_tau_SHG
+        krn.set_scalar_arg_dtypes((None, None, np.int32))
+        krn.set_args(self.Et_cla.data, self.Esig_t_tau_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_t_tau.shape, None)
+        ev.wait()
+        root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
+
+    def generateEsig_t_tau_SD(self):
+        ''' Generate the time shifted E-field matrix for the SD process.
+        
+        Output: 
+        self.Esig_t_tau, a n_tau x n_t matrix where each row is Esig(t,tau)
+        '''      
+        root.debug('Generating new Esig_t_tau from SD')  
+        t0 = time.clock()
+        krn = self.progs.progs['generateEsig_t_tau_SD'].generateEsig_t_tau_SD
         krn.set_scalar_arg_dtypes((None, None, np.int32))
         krn.set_args(self.Et_cla.data, self.Esig_t_tau_cla.data, self.N)
         ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_t_tau.shape, None)
@@ -436,8 +455,16 @@ class FrogCalculation(object):
         ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
         ev.wait()
         
-        Esig_t_tau = self.Esig_t_tau_p_cla.get()
-        mx = ((Esig_t_tau*Esig_t_tau.conj()).real).max() * self.N*self.N
+        krn = self.progs.progs['normEsig'].normEsig
+        krn.set_scalar_arg_dtypes((None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Esig_t_tau_norm_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_t_tau_p.shape, None)
+        ev.wait()
+        mx = cla.max(self.Esig_t_tau_norm_cla).get() * self.N*self.N
+
+#         Esig_t_tau = self.Esig_t_tau_p_cla.get()
+#         mx = ((Esig_t_tau*Esig_t_tau.conj()).real).max() * self.N*self.N
+        
         X0 = cla.sum(self.X0_cla, queue=self.q).get() / mx
         X1 = cla.sum(self.X1_cla, queue=self.q).get() / mx
         X2 = cla.sum(self.X2_cla, queue=self.q).get() / mx
@@ -551,14 +578,17 @@ class FrogCalculation(object):
     def setupVanillaAlgorithm(self):
         pass
                   
-    def runCycleVanilla(self, cycles = 1):
+    def runCycleVanilla(self, cycles = 1, algo = 'SHG'):
         root.debug('Starting FROG reconstruction cycle using the vanilla algorithm')
         t0 = time.clock()
         er = []
         self.setupVanillaAlgorithm()
         for c in range(cycles):
             root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
-            self.generateEsig_t_tau_SHG()
+            if algo=='SD':
+                self.generateEsig_t_tau_SD()
+            else:
+                self.generateEsig_t_tau_SHG()
             self.generateEsig_w_tau()
             G = self.calcReconstructionError()
             self.applyIntensityData()
@@ -602,12 +632,12 @@ class FrogCalculation(object):
     
     def runComplete(self):
         tic = time.clock()
-        self.runCycleVanilla(30) 
-        er=self.runCycleGP(30)
-        oldEr = np.min(er)
-        newEr = oldEr - 1e-6
+        er = self.runCycleVanilla(30)
+        oldEr = np.min(er) 
+        er = self.runCycleGP(30)        
+        newEr = np.min(er)
         epochs = 0
-        while oldEr-newEr > 1e-6 and epochs<20:
+        while oldEr-newEr > 1e-5 and epochs<20:
             oldEr = newEr
             er=self.runCycleGP(30)
             newEr = np.min(er)
@@ -624,10 +654,14 @@ if __name__ == '__main__':
     tau_pulse = 100e-15
     
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
-    p.generateGaussianCubicPhase(5e24, 3e39)
-    gt = sp.SimulatedSHGFrogTrace(N, dt, l0)
+    p.generateGaussianCubicSpectralPhase(0, 1e-40)
+#     p.generateGaussianCubicPhase(5e24, 3e39)
+#    p.generateDoublePulse(tau_pulse, deltaT=0.5e-12)
+    gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
-    Ifrog = gt.generateSHGTraceDt(N, dt, 400e-9)
+    IfrogSHG = gt.generateSHGTraceDt(N, dt, 400e-9)
+    IfrogSD = gt.generateSDTraceDt(N, dt, 800e-9)
+#     Ifrog = gt.addNoise(0.01, 0.1)
     l = gt.getWavelengths()
     t = gt.getTimedelays()
     
@@ -637,7 +671,7 @@ if __name__ == '__main__':
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
 
     frog.initPulseFieldRandom(N, dt, l0)
-    frog.conditionFrogTrace(Ifrog, l[0], l[-1], t[0], t[-1])
+    frog.conditionFrogTrace(IfrogSHG, l[0], l[-1], t[0], t[-1])
     frog.initClBuffers()
 #     er=frog.runCycleVanilla(1)
 #    frog.generateEsig_t_tau_SHG()
