@@ -30,7 +30,7 @@ f = logging.Formatter("%(asctime)s - %(module)s.   %(funcName)s - %(levelname)s 
 fh = logging.StreamHandler()
 fh.setFormatter(f)
 root.addHandler(fh)
-root.setLevel(logging.CRITICAL)
+root.setLevel(logging.DEBUG)
     
 class FrogCalculation(object):
     def __init__(self):
@@ -118,6 +118,8 @@ class FrogCalculation(object):
         self.X2_cla = cla.zeros(self.q, (self.N), self.dtype_r)
         self.X3_cla = cla.zeros(self.q, (self.N), self.dtype_r)
         self.X4_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X5_cla = cla.zeros(self.q, (self.N), self.dtype_r)
+        self.X6_cla = cla.zeros(self.q, (self.N), self.dtype_r)
         
         self.Esig_t_tau_norm = np.zeros((self.N, self.N), self.dtype_r)
         self.Esig_t_tau_norm_cla = cla.to_device(self.q, self.Esig_t_tau_norm)
@@ -212,7 +214,7 @@ class FrogCalculation(object):
         self.dt = t_res
         self.t = np.linspace(-t_span/2, t_span/2, N)
         
-        p = sp.SimulatedSHGFrogTrace(N, self.dt, tau = tau_pulse, l0 = l0)
+        p = sp.SimulatedFrogTrace(N, self.dt, tau = tau_pulse, l0 = l0)
         p.pulse.generateGaussian(tau_pulse)
         self.tau_start_ind = 0
         self.tau_stop_ind = N-1
@@ -353,7 +355,7 @@ class FrogCalculation(object):
         ev.wait()
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
-    def updateEt_vanilla(self):
+    def updateEt_vanilla(self, algo='SHG'):
         root.debug('Updating Et using vanilla algorithm')
         t0 = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_w_tau_cla,) , (self.Esig_t_tau_p_cla,) , axes = [1])        
@@ -363,11 +365,18 @@ class FrogCalculation(object):
             e.wait()
             
         if self.useGPU == True:
-            krn = self.progs.progs['updateEtVanillaSum'].updateEtVanillaSum
-            krn.set_scalar_arg_dtypes((None, None, np.int32))
-            krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
-            ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
-            ev.wait()
+            if algo == 'SD':
+                krn = self.progs.progs['updateEtVanillaSumSD'].updateEtVanillaSumSD
+                krn.set_scalar_arg_dtypes((None, None, np.int32))
+                krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
+                ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+                ev.wait()                
+            else:
+                krn = self.progs.progs['updateEtVanillaSumSHG'].updateEtVanillaSumSHG
+                krn.set_scalar_arg_dtypes((None, None, np.int32))
+                krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
+                ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+                ev.wait()
     
             krn = self.progs.progs['updateEtVanillaNorm'].updateEtVanillaNorm
             krn.set_scalar_arg_dtypes((None, np.int32))
@@ -376,7 +385,11 @@ class FrogCalculation(object):
             ev.wait()
         else:
             Esig_t_tau_p = self.Esig_t_tau_p_cla.get()
-            Et = Esig_t_tau_p.sum(axis=0)
+            if algo=='SD':
+                Et = np.sqrt(Esig_t_tau_p.sum(axis=0))
+#                 Et = (Esig_t_tau_p.sum(axis=0))
+            else:
+                Et = Esig_t_tau_p.sum(axis=0)
             Et = Et/np.abs(Et).max()
             self.Et_cla.set(Et)
             
@@ -385,7 +398,7 @@ class FrogCalculation(object):
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def gradZSHG_naive(self):
-        root.debug('Calculating dZ using for loops')
+        root.debug('Calculating dZ for SHG using for loops')
         Et = self.Et_cla.get()
         Esigp = self.Esig_t_tau_p_cla.get()
         dZ = np.zeros_like(Et)
@@ -404,8 +417,38 @@ class FrogCalculation(object):
         self.dZ_cla.set(dZ.copy())
 
     def gradZSHG_gpu(self):
-        root.debug('Calculating dZ using gpu')
+        root.debug('Calculating dZ for SHG using gpu')
         krn = self.progs.progs['gradZSHG'].gradZSHG
+        krn.set_scalar_arg_dtypes((None, None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.dZ_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+        ev.wait()
+
+    def gradZSD_naive(self):
+        # Todo: fix this algorithm
+        root.debug('Calculating dZ for SD using for loops')
+        Et = self.Et_cla.get()
+        Esigp = self.Esig_t_tau_p_cla.get()
+        dZ = np.zeros_like(Et)
+        N = Esigp.shape[0]
+        sz = N*N
+        for t0 in range(N):
+            T = 0.0 + 1j*0.0
+            for tau in range(N):
+                tp = t0 - (tau-N/2)
+                if tp >=0 and tp < N:
+                    EtEtp = np.conj(Et[t0])*Et[tp]
+                    T += 4*(Et[t0]*np.conj(EtEtp) - Esigp[tau, t0])*EtEtp
+                tp = t0 + (tau-N/2)
+                if tp >=0 and tp < N:
+                    EtpEtp = Et[tp]*Et[tp]
+                    T += 2*(Et[t0]*np.conj(EtpEtp) - np.conj(Esigp[tau, tp]))*EtpEtp
+            dZ[t0] = -T/sz
+        self.dZ_cla.set(dZ.copy())
+
+    def gradZSD_gpu(self):
+        root.debug('Calculating dZ for SD using gpu')
+        krn = self.progs.progs['gradZSD'].gradZSD
         krn.set_scalar_arg_dtypes((None, None, None, np.int32))
         krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.dZ_cla.data, self.N)
         ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
@@ -481,7 +524,80 @@ class FrogCalculation(object):
         
         return X       
      
-    def updateEt_gp(self):
+    def minZerrKernSD_naive(self):
+        # Todo: fix this algorithm
+        Et0 = self.Et_cla.get()
+        Esig = self.Esig_t_tau_p_cla.get()
+        dZ = self.dZ_cla.get()
+        N = Esig.shape[0]
+        
+        mx = 0.0
+        X = np.zeros(7)
+        
+        for t in range(N):
+            for tau in range(N):
+                T = np.abs(Esig[tau, t])**2
+                if mx < T:
+                    mx = T
+                tp = t-(tau-N/2)
+                if tp >=0 and tp < N:
+                    a0 = Esig[tau, t] - Et0[t]*Et0[t]*np.conj(Et0[tp])
+                    a1 = -(2*Et0[t]*dZ[t]*np.conj(Et0[tp]) + Et0[t]*Et0[t]*np.conj(dZ[tp]))
+                    a2 = -(dZ[t]*dZ[t]*np.conj(Et0[tp]) + 2*Et0[t]*np.conj(dZ[tp])*dZ[t])
+                    a3 = -dZ[t]*dZ[t]*np.conj(dZ[tp])
+                    
+                    X[0] += np.real(a3*np.conj(a3))
+                    X[1] += np.real(a2*np.conj(a3) + a3*np.conj(a2))
+                    X[2] += np.real(a1*np.conj(a3) + a3*np.conj(a1) + a2*np.conj(a2))
+                    X[3] += np.real(a0*np.conj(a3) + a3*np.conj(a0) + a1*np.conj(a2) + a2*np.conj(a1))
+                    X[4] += np.real(a0*np.conj(a2) + a2*np.conj(a0) + a1*np.conj(a1))
+                    X[5] += np.real(a0*np.conj(a1) + a1*np.conj(a0))
+                    X[6] += np.real(a0*np.conj(a0))
+        T = N*N*mx
+        X = X/T
+        
+        root.debug(''.join(('Esig_t_tau_p norm max: ', str(mx))))
+        
+        return X
+
+    def minZerrKernSD_gpu(self):
+        krn = self.progs.progs['minZerrSD'].minZerrSD
+        krn.set_scalar_arg_dtypes((None, None, None, None, None, None, None, None, None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.dZ_cla.data, 
+                     self.X0_cla.data, self.X1_cla.data, self.X2_cla.data, self.X3_cla.data, 
+                     self.X4_cla.data, self.X5_cla.data, self.X6_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
+        ev.wait()
+        
+        krn = self.progs.progs['normEsig'].normEsig
+        krn.set_scalar_arg_dtypes((None, None, np.int32))
+        krn.set_args(self.Esig_t_tau_p_cla.data, self.Esig_t_tau_norm_cla.data, self.N)
+        ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_t_tau_p.shape, None)
+        ev.wait()
+        mx = cla.max(self.Esig_t_tau_norm_cla).get() * self.N*self.N
+
+#         Esig_t_tau = self.Esig_t_tau_p_cla.get()
+#         mx = ((Esig_t_tau*Esig_t_tau.conj()).real).max() * self.N*self.N
+        
+        X0 = cla.sum(self.X0_cla, queue=self.q).get() / mx
+        X1 = cla.sum(self.X1_cla, queue=self.q).get() / mx
+        X2 = cla.sum(self.X2_cla, queue=self.q).get() / mx
+        X3 = cla.sum(self.X3_cla, queue=self.q).get() / mx
+        X4 = cla.sum(self.X4_cla, queue=self.q).get() / mx
+        X5 = cla.sum(self.X5_cla, queue=self.q).get() / mx
+        X6 = cla.sum(self.X6_cla, queue=self.q).get() / mx
+        
+        root.debug(''.join(('X0=', str(X0), ', type ', str(type(X0)))))
+        
+        root.debug(''.join(('Poly: ', str(X6), ' x^6 + ', str(X5), ' x^5 + ', str(X4), ' x^4 + ', str(X3), ' x^3 + ', str(X2), ' x^2 + ', str(X1), ' x + ', str(X0))))
+        # Polynomial in dZ (expansion of differential)
+        X = np.array([X0, X1, X2, X3, X4, X5, X6]).astype(np.double)
+        
+        root.debug(''.join(('Esig_t_tau_p norm max: ', str(mx/(self.N*self.N)))))
+        
+        return X       
+         
+    def updateEt_gp(self, algo = 'SHG'):
         root.debug('Updating Et using GP algorithm')
         tic = time.clock()
  
@@ -489,18 +605,34 @@ class FrogCalculation(object):
         for e in events:
             e.wait()
        
-        # Calculate the gradient of the functional distance:
-        if self.useGPU == True:
-            self.gradZSHG_gpu()
-        else:
-            self.gradZSHG_naive()
-        
-        # Calculate error minimization polynomial
-        if self.useGPU == True:
-            p1 = self.minZerrKernSHG_gpu()
-        else:
-            p1 = self.minZerrKernSHG_naive()
-        root.debug(''.join(('Poly: ', str(p1[4]), ' x^4 + ', str(p1[3]), ' x^3 + ', str(p1[2]), ' x^2 + ', str(p1[1]), ' x + ', str(p1[0]))))
+        if algo == 'SHG':
+            # Calculate the gradient of the functional distance:
+            if self.useGPU == True:
+                self.gradZSHG_gpu()
+            else:
+                self.gradZSHG_naive()
+            
+            # Calculate error minimization polynomial
+            if self.useGPU == True:
+                p1 = self.minZerrKernSHG_gpu()
+            else:
+                p1 = self.minZerrKernSHG_naive()
+            root.debug(''.join(('Poly: ', str(p1[4]), ' x^4 + ', str(p1[3]), ' x^3 + ', str(p1[2]), ' x^2 + ', str(p1[1]), ' x + ', str(p1[0]))))
+        elif algo == 'SD':
+            # Calculate the gradient of the functional distance:
+            if self.useGPU == True:
+                self.gradZSD_gpu()
+            else:
+                self.gradZSD_naive()
+            
+            # Calculate error minimization polynomial
+            if self.useGPU == True:
+                p1 = self.minZerrKernSD_gpu()
+            else:
+                p1 = self.minZerrKernSD_naive()
+            root.debug(''.join(('Poly: ', str(p1[4]), ' x^4 + ', str(p1[3]), ' x^3 + ', str(p1[2]), ' x^2 + ', str(p1[1]), ' x + ', str(p1[0]))))
+            
+        # Root finding of the polynomial in the gradient expansion
         p = np.polyder(p1)
         r = np.roots(p)
         X = r[np.abs(r.imag)<1e-9].real
@@ -578,8 +710,12 @@ class FrogCalculation(object):
     def setupVanillaAlgorithm(self):
         pass
                   
-    def runCycleVanilla(self, cycles = 1, algo = 'SHG'):
+    def runCycleVanilla(self, cycles = 1, algo = 'SHG', useGPU = None):
         root.debug('Starting FROG reconstruction cycle using the vanilla algorithm')
+        if useGPU is not None:
+            self.useGPU = useGPU
+            self.rollFFT = useGPU
+        
         t0 = time.clock()
         er = []
         self.setupVanillaAlgorithm()
@@ -592,7 +728,7 @@ class FrogCalculation(object):
             self.generateEsig_w_tau()
             G = self.calcReconstructionError()
             self.applyIntensityData()
-            self.updateEt_vanilla()
+            self.updateEt_vanilla('SD')
 #             self.centerPeakTime()                        
             root.debug('-------------------------------------------')
             root.debug(''.join(('Error G = ', str(G))))
@@ -607,18 +743,24 @@ class FrogCalculation(object):
     def setupGPAlgorithm(self):
         pass
                   
-    def runCycleGP(self, cycles = 1):
+    def runCycleGP(self, cycles = 1, algo = 'SHG', useGPU = None):
         root.debug('Starting FROG reconstruction cycle using the GP algorithm')
+        if useGPU is not None:
+            self.useGPU = useGPU
+            self.rollFFT = useGPU
         t0 = time.clock()
         er = []
         self.setupGPAlgorithm()
         for c in range(cycles):
             root.debug(''.join(('Cycle ', str(c+1), '/', str(cycles))))
-            self.generateEsig_t_tau_SHG()
+            if algo=='SD':
+                self.generateEsig_t_tau_SD()
+            else:
+                self.generateEsig_t_tau_SHG()
             self.generateEsig_w_tau()
             G = self.calcReconstructionError()
             self.applyIntensityData()
-            self.updateEt_gp()
+            self.updateEt_gp(algo)
 #             self.centerPeakTime()                        
             root.debug('-------------------------------------------')
             root.debug(''.join(('Error G = ', str(G))))
@@ -654,8 +796,9 @@ if __name__ == '__main__':
     tau_pulse = 100e-15
     
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
-    p.generateGaussianCubicSpectralPhase(0, 1e-40)
+#     p.generateGaussianCubicSpectralPhase(0, 1e-40)
 #     p.generateGaussianCubicPhase(5e24, 3e39)
+    p.generateGaussian(tau_pulse)
 #    p.generateDoublePulse(tau_pulse, deltaT=0.5e-12)
     gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
@@ -671,7 +814,7 @@ if __name__ == '__main__':
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
 
     frog.initPulseFieldRandom(N, dt, l0)
-    frog.conditionFrogTrace(IfrogSHG, l[0], l[-1], t[0], t[-1])
+    frog.conditionFrogTrace(IfrogSD, l[0], l[-1], t[0], t[-1])
     frog.initClBuffers()
 #     er=frog.runCycleVanilla(1)
 #    frog.generateEsig_t_tau_SHG()

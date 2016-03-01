@@ -44,7 +44,7 @@ class FrogClKernels(object):
             const int t_i = get_global_id(1);
             cfloat_t Etmp = (cfloat_t)(0.0f, 0.0f);
             int ind = (t_i-tau_i+N/2+N)%N;
-            Esig[t_i + N*tau_i] = cfloat_mul(Et[t_i], cfloat_mul(Et[t_i], Et[ind]));
+            Esig[t_i + N*tau_i] = cfloat_mul(Et[t_i], cfloat_mul(Et[t_i], cfloat_conj(Et[ind])));
         }
         """
         prg = cl.Program(self.ctx, Source).build()
@@ -90,7 +90,7 @@ class FrogClKernels(object):
     def initUpdateEtVanilla(self):
         Source = """
         #include <pyopencl-complex.h>
-        __kernel void updateEtVanillaSum(__global cfloat_t* Esig_t_tau_p, __global cfloat_t* Et, int N){
+        __kernel void updateEtVanillaSumSHG(__global cfloat_t* Esig_t_tau_p, __global cfloat_t* Et, int N){
             const int t_i = get_global_id(0);
             
             cfloat_t sum = (cfloat_t)(0.0f, 0.0f);
@@ -102,7 +102,23 @@ class FrogClKernels(object):
         }
         """
         prg = cl.Program(self.ctx, Source).build()
-        self.progs['updateEtVanillaSum'] = prg
+        self.progs['updateEtVanillaSumSHG'] = prg
+
+        Source = """
+        #include <pyopencl-complex.h>
+        __kernel void updateEtVanillaSumSD(__global cfloat_t* Esig_t_tau_p, __global cfloat_t* Et, int N){
+            const int t_i = get_global_id(0);
+            
+            cfloat_t sum = (cfloat_t)(0.0f, 0.0f);
+            int i;
+            for(i=0; i<N; i++) {
+                sum = cfloat_add(sum, Esig_t_tau_p[t_i + N*i]);
+            }
+            Et[t_i] = cfloat_sqrt(sum);
+        }
+        """
+        prg = cl.Program(self.ctx, Source).build()
+        self.progs['updateEtVanillaSumSD'] = prg
         
         Source = """
         #include <pyopencl-complex.h>
@@ -176,24 +192,24 @@ class FrogClKernels(object):
                 tp = t_i-(tau_i-N/2);
                 if (tp >= 0 && tp < N)
                 {
-                    tmp0 = cfloat_mul(Et[t_i], Et[tp]);
+                    tmp0 = cfloat_mul(cfloat_conj(Et[t_i]), Et[tp]);
                     // Complex number subtraction routine doesn't work so I have to do like this:
-                    tmp2 = cfloat_mul(Et[t_i], tmp0);                    
+                    tmp2 = cfloat_mul(Et[t_i], cfloat_conj(tmp0));                    
                     tmp1 = cfloat_new(cfloat_real(tmp2) - cfloat_real(Esig_t_tau[t_i+N*tau_i]), cfloat_imag(tmp2) - cfloat_imag(Esig_t_tau[t_i+N*tau_i])); 
-                    T = cfloat_add(T, cfloat_mul(tmp1, cfloat_conj(tmp0)));
+                    T = cfloat_rmul(4.0f, cfloat_add(T, cfloat_mul(tmp1, tmp0)));
                 }
                 tp = t_i+(tau_i-N/2);
                 if (tp >= 0 && tp < N)
                 {
-                    tmp0 = cfloat_mul(Et[t_i], Et[tp]);
-                    tmp2 = cfloat_mul(Et[tp], tmp0);
+                    tmp0 = cfloat_mul(Et[tp], Et[tp]);
+                    tmp2 = cfloat_mul(Et[t_i], cfloat_conj(tmp0));
                     // Complex number subtraction routine doesn't work so I have to do like this:
-                    tmp1 = cfloat_new(cfloat_real(tmp2) - cfloat_real(Esig_t_tau[tp+N*tau_i]), cfloat_imag(tmp2) - cfloat_imag(Esig_t_tau[tp+N*tau_i]));
-                    T = cfloat_add(T, cfloat_mul(tmp1, cfloat_conj(tmp0)));
+                    tmp1 = cfloat_new(cfloat_real(tmp2) - cfloat_real(Esig_t_tau[tp+N*tau_i]), cfloat_imag(tmp2) + cfloat_imag(Esig_t_tau[tp+N*tau_i]));
+                    T = cfloat_rmul(2.0f, cfloat_add(T, cfloat_mul(tmp1, tmp0)));
                 }
                 
             }
-            dZ[t_i] = cfloat_divider(T, -N*N*0.25);
+            dZ[t_i] = cfloat_divider(T, -N*N);
         }
         """
         prg = cl.Program(self.ctx, Source).build()
@@ -258,26 +274,28 @@ class FrogClKernels(object):
                 tp = t_i-(tau_i-N/2);
                 if (tp >= 0 && tp < N)
                 {                    
-                    tmp0 = cfloat_mul(Et[t_i], cfloat_mul(Et[t_i], Et[tp]));
+                    tmp0 = cfloat_mul(Et[t_i], cfloat_mul(Et[t_i], cfloat_conj(Et[tp])));
                     a0 = cfloat_new(cfloat_real(tmp0) - cfloat_real(Esig_t_tau[t_i+N*tau_i]), cfloat_imag(tmp0) - cfloat_imag(Esig_t_tau[t_i+N*tau_i]));
                     
-                    tmp0 = cfloat_rmul(2.0f, cfloat_mul(dZ[t_i], Et[tp]));
-                    tmp1 = cfloat_mul(Et[t_i], dZ[tp]);
+                    tmp0 = cfloat_rmul(2.0f, cfloat_mul(dZ[t_i], cfloat_conj(Et[tp])));
+                    tmp1 = cfloat_mul(Et[t_i], cfloat_conj(dZ[tp]));
                     a1 = cfloat_mul(Et[t_i], cfloat_add(tmp0, tmp1));
                     
-                    tmp0 = cfloat_rmul(2.0f, cfloat_mul(Et[t_i], dZ[tp]));
-                    a2 = cfloat_mul(dZ[t_i], cfloat_add(Et[tp], tmp0));
+                    tmp0 = cfloat_rmul(2.0f, cfloat_mul(Et[t_i], cfloat_conj(dZ[tp])));
+                    tmp1 = cfloat_mul(dZ[t_i], cfloat_conj(Et[tp]));
+                    a2 = cfloat_mul(dZ[t_i], cfloat_add(tmp0, tmp1));
                     
-                    a3 = cfloat_mul(dZ[t_i], dZ[tp]);
+                    a3 = cfloat_mul(dZ[t_i], cfloat_mul(dZ[t_i], cfloat_conj(dZ[tp])));
                     
                     X0[t_i] += cfloat_real(cfloat_mul(a0, cfloat_conj(a0)));
-                    X1[t_i] += cfloat_real(cfloat_add(cfloat_mul(a0, cfloat_conj(a1)), cfloat_mul(a1, cfloat_conj(a0))));
+//                    X1[t_i] += cfloat_real(cfloat_add(cfloat_mul(a0, cfloat_conj(a1)), cfloat_mul(a1, cfloat_conj(a0))));
+                    X1[t_i] += cfloat_real(cfloat_mul(a1, cfloat_conj(a1)));
                     tmp0 = cfloat_add(cfloat_mul(a0, cfloat_conj(a2)), cfloat_mul(a2, cfloat_conj(a0)));
                     tmp1 = cfloat_add(tmp0, cfloat_mul(a1, cfloat_conj(a1)));
                     X2[t_i] += cfloat_real(tmp1);
                     tmp0 = cfloat_add(cfloat_mul(a0, cfloat_conj(a3)), cfloat_mul(a3, cfloat_conj(a0)));
                     tmp1 = cfloat_add(cfloat_mul(a1, cfloat_conj(a2)), cfloat_mul(a2, cfloat_conj(a1)));
-                    X3[t_i] += cfloat_real(cfloat_add(tmp1, tmp2));
+                    X3[t_i] += cfloat_real(cfloat_add(tmp1, tmp0));
                     tmp0 = cfloat_add(cfloat_mul(a1, cfloat_conj(a3)), cfloat_mul(a3, cfloat_conj(a1)));
                     tmp1 = cfloat_add(tmp0, cfloat_mul(a2, cfloat_conj(a2)));
                     X4[t_i] += cfloat_real(tmp1);
