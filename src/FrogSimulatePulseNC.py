@@ -167,6 +167,7 @@ class SimulatedFrogTrace(object):
         root.debug(''.join(('l_shift: ', str(l_shift))))
         root.debug(''.join(('nl_shift: ', str(nl_shift))))
         
+        Esig_t_tau = []
         for sh in shiftVec:
             Ils = np.zeros_like(Il)
 #             signalPulse.setEt(Et*Et*np.conj(self.pulse.getShiftedEt(sh)), t)
@@ -174,9 +175,11 @@ class SimulatedFrogTrace(object):
             l, Iln = signalPulse.getSpectrogram(t.shape[0])
             Ils = np.roll(Iln, nl_shift)
             Ifrog.append(Ils)
+            Esig_t_tau.append(signalPulse.Et)
             
         Ifrog = np.array(Ifrog).real
-        self.Ifrog = Ifrog/Ifrog.max()
+        self.Ifrog = Ifrog/Ifrog.max()       
+        self.Esig_t_tau = np.array(Esig_t_tau) 
         
         return self.Ifrog
     

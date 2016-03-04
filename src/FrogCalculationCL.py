@@ -30,7 +30,7 @@ f = logging.Formatter("%(asctime)s - %(module)s.   %(funcName)s - %(levelname)s 
 fh = logging.StreamHandler()
 fh.setFormatter(f)
 root.addHandler(fh)
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.CRITICAL)
     
 class FrogCalculation(object):
     def __init__(self):
@@ -345,14 +345,31 @@ class FrogCalculation(object):
         toc = time.clock()
         root.debug(''.join(('Time spent: ', str(toc-tic))))
         
-    def applyIntensityData(self, I_w_tau=None):
-        root.debug('Applying intensity data from experiment')
+    def applyIntensityData(self, I_w_tau=None):        
+        root.debug('Applying intensity data from experiment')        
         t0 = time.clock()
+
         krn = self.progs.progs['applyIntensityData'].applyIntensityData
         krn.set_scalar_arg_dtypes((None, None, np.int32))
         krn.set_args(self.Esig_w_tau_cla.data, self.I_w_tau_cla.data, self.N)
         ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_w_tau.shape, None)
         ev.wait()
+
+#         if self.useGPU == True:
+#             krn = self.progs.progs['applyIntensityData'].applyIntensityData
+#             krn.set_scalar_arg_dtypes((None, None, np.int32))
+#             krn.set_args(self.Esig_w_tau_cla.data, self.I_w_tau_cla.data, self.N)
+#             ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_w_tau.shape, None)
+#             ev.wait()
+#         else:
+#             eps = 0.00
+#             Esig_w_tau = self.Esig_w_tau_cla.get()
+#             Esig_mag = np.abs(Esig_w_tau)
+#             
+#             Esig_w_tau_p = np.zeros_like(Esig_w_tau)
+#             good_ind = np.where(Esig_mag > eps)
+#             Esig_w_tau_p[good_ind[0], good_ind[1]] = np.sqrt(self.I_w_tau_cla.get()[good_ind[0], good_ind[1]])*Esig_w_tau[good_ind[0], good_ind[1]]/Esig_mag[good_ind[0], good_ind[1]]
+
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
         
     def updateEt_vanilla(self, algo='SHG'):
@@ -360,23 +377,33 @@ class FrogCalculation(object):
         t0 = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_w_tau_cla,) , (self.Esig_t_tau_p_cla,) , axes = [1])        
 #         events = transform.enqueue(forward = False)
-        events = self.Esig_t_tau_p_fft.enqueue(forward = False)
-        for e in events:
-            e.wait()
+            
+#         self.Esig_t_tau_p_cla.set(np.fft.ifft(self.Esig_w_tau_cla.get(), axis=1).astype(self.dtype_c).copy())
             
         if self.useGPU == True:
+            events = self.Esig_t_tau_p_fft.enqueue(forward = False)
+            for e in events:
+                e.wait()
             if algo == 'SD':
                 krn = self.progs.progs['updateEtVanillaSumSD'].updateEtVanillaSumSD
                 krn.set_scalar_arg_dtypes((None, None, np.int32))
                 krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
                 ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
-                ev.wait()                
+                ev.wait()
+                
+                Et = self.Et_cla.get()
+                self.Et_cla.set(-np.conj(Et).astype(self.dtype_c).copy())
+                
+#                 Esig_w_tau = self.Esig_w_tau_cla.get()
+#                 Gm  = np.conj(Esig_w_tau.sum(axis=1))[::-1]
+#                 self.Et_cla.set(Gm.copy())
+                
             else:
                 krn = self.progs.progs['updateEtVanillaSumSHG'].updateEtVanillaSumSHG
                 krn.set_scalar_arg_dtypes((None, None, np.int32))
                 krn.set_args(self.Esig_t_tau_p_cla.data, self.Et_cla.data, self.N)
                 ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Et.shape, None)
-                ev.wait()
+                ev.wait()                                
     
             krn = self.progs.progs['updateEtVanillaNorm'].updateEtVanillaNorm
             krn.set_scalar_arg_dtypes((None, np.int32))
@@ -384,6 +411,7 @@ class FrogCalculation(object):
             ev = cl.enqueue_nd_range_kernel(self.q, krn, [1], None)
             ev.wait()
         else:
+            self.Esig_t_tau_p_cla.set(np.fft.ifft(self.Esig_w_tau_cla.get(), axis=1).astype(self.dtype_c).copy())
             Esig_t_tau_p = self.Esig_t_tau_p_cla.get()
             if algo=='SD':
                 Et = np.sqrt(Esig_t_tau_p.sum(axis=0))
@@ -796,9 +824,9 @@ if __name__ == '__main__':
     tau_pulse = 100e-15
     
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
-#     p.generateGaussianCubicSpectralPhase(0, 1e-40)
+    p.generateGaussianCubicSpectralPhase(0, 1e-40)
 #     p.generateGaussianCubicPhase(5e24, 3e39)
-    p.generateGaussian(tau_pulse)
+#     p.generateGaussian(tau_pulse)
 #    p.generateDoublePulse(tau_pulse, deltaT=0.5e-12)
     gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
@@ -814,7 +842,7 @@ if __name__ == '__main__':
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
 
     frog.initPulseFieldRandom(N, dt, l0)
-    frog.conditionFrogTrace(IfrogSD, l[0], l[-1], t[0], t[-1])
+    frog.conditionFrogTrace(IfrogSD[::-1,:], l[0], l[-1], t[0], t[-1])
     frog.initClBuffers()
 #     er=frog.runCycleVanilla(1)
 #    frog.generateEsig_t_tau_SHG()
