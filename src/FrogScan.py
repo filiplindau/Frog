@@ -16,6 +16,7 @@ from PyQt4 import QtGui, QtCore
 
 from scipy.signal import medfilt2d
 from matplotlib.pyplot import imsave
+from PIL import Image
 
 import time
 import sys
@@ -39,6 +40,21 @@ import PyTango as pt
 import threading
 import numpy as np
 
+
+
+class MyQSplitter(QtGui.QSplitter):
+    def __init__(self, parent = None):
+        QtGui.QSplitter.__init__(self, parent)
+        
+    def dragEnterEvent(self, e):
+        root.debug(''.join(('Drag enter event: ', str(e))))
+
+    def resizeEvent(self, e):
+        root.debug(''.join(('Resize event: ', str(e))))
+
+    def changeEvent(self, e):
+        root.debug(''.join(('Change event: ', str(e))))
+        
 class TangoDeviceClient(QtGui.QWidget):
     def __init__(self, redpitayaName, motorName, parent=None):
         QtGui.QWidget.__init__(self, parent)
@@ -92,11 +108,12 @@ class TangoDeviceClient(QtGui.QWidget):
         self.roiData = np.zeros((2,2))
         self.wavelengths = None
         self.trendData1 = None
-        self.trendData2 = np.zeros(600)
+        self.trendData2 = None
         self.scanData = np.array([])
         self.timeData = np.array([])
+        self.timeMarginal = np.array([])
+        self.timeMarginalTmp = 0
         self.posData = np.array([])
-        self.avgSamples = 5
         self.currentSample = 0
         self.avgData = 0
         self.targetPos = 0.0
@@ -110,10 +127,15 @@ class TangoDeviceClient(QtGui.QWidget):
         self.scanTimer = QtCore.QTimer()
         self.scanTimer.timeout.connect(self.scanUpdateAction)
 
-        self.settings = QtCore.QSettings('Maxlab', 'Frog')
+        
         
 
-
+#         splitterSizes = [self.settings.value('splitterSize0',200).toInt()[0], self.settings.value('splitterSize1',200).toInt()[0], self.settings.value('splitterSize2',200).toInt()[0]]
+#         root.debug(''.join(('New splitter sizes: ', str(splitterSizes))))
+#         self.plotSplitter.setSizes(splitterSizes)
+#         self.plotSplitter.setSizePolicy(QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Expanding)
+#         self.plotSplitter.update()
+#         root.debug(''.join(('Splitter sizes: ', str(self.plotSplitter.sizes()))))
 
     def readImage(self, data):
 #         root.debug(''.join(('Image data type: ', str(type(data.value)))))
@@ -181,7 +203,10 @@ class TangoDeviceClient(QtGui.QWidget):
     def startScan(self):
         self.scanData = None
         self.trendData1 = None
+        self.trendData2 = None
+        self.timeMarginalTmp = 0
         self.timeData = np.array([])
+        self.timeMarginal = np.array([])
         self.posData = np.array([])
         self.scanning = True
         self.moveStart = True
@@ -199,14 +224,16 @@ class TangoDeviceClient(QtGui.QWidget):
 
     def exportScan(self):
         print 'Exporting scan data'
-        data = self.scanData
-        filename = ''.join(('frogimage_', time.strftime('%Y-%m-%d_%Hh%M'), '.png'))
-        imsave(filename, data)
+        data = np.uint8(self.scanData)
+        filename = ''.join(('frogtrace_', time.strftime('%Y-%m-%d_%Hh%M'), '_image.png'))
+        im = Image.fromarray(data)
+        im.save(filename)
+#         imsave(filename, data)
         data = self.timeData
-        filename = ''.join(('frogtime_', time.strftime('%Y-%m-%d_%Hh%M'), '.txt'))
+        filename = ''.join(('frogtrace_', time.strftime('%Y-%m-%d_%Hh%M'), '_timevector.txt'))
         np.savetxt(filename, data)
         data = self.wavelengths
-        filename = ''.join(('frogwavlengths_', time.strftime('%Y-%m-%d_%Hh%M'), '.txt'))
+        filename = ''.join(('frogtrace_', time.strftime('%Y-%m-%d_%Hh%M'), '_wavelengthvector.txt'))
         np.savetxt(filename, data)
 
     def scanUpdateAction(self):
@@ -224,21 +251,27 @@ class TangoDeviceClient(QtGui.QWidget):
         self.avgData = self.trendData1/self.avgSamples
         if self.scanData is None:
             self.scanData = np.array([self.avgData])
+            self.timeMarginal = np.hstack((self.timeMarginal, self.timeMarginalTmp/self.avgSamples))
+            self.timeMarginalTmp = 0.0
         else:
             self.scanData = np.vstack((self.scanData, self.avgData))
+            self.timeMarginal = np.hstack((self.timeMarginal, self.timeMarginalTmp/self.avgSamples))
+            self.timeMarginalTmp = 0.0
         pos = np.double(str(self.currentPosLabel.text()))
         newTime = (pos - self.startPosSpinbox.value()) * 2 * 1e-3 / 299792458.0
         self.timeData = np.hstack((self.timeData, newTime))
         self.posData = np.hstack((self.posData, pos * 1e-3))
+        root.debug(''.join(('Time vector: ', str(self.timeData))))
+        root.debug(''.join(('Time marginal: ', str(self.timeMarginal))))
         if self.timeUnitsRadio.isChecked() == True:
-            self.frogImageWidget.setImage(self.scanData, autoRange=False, autoLevels=False)
-#             self.plot5.setData(x=self.timeData * 1e12, y=self.scanData)
+            self.frogImageWidget.setImage(np.transpose(self.scanData), autoRange=False, autoLevels=False)
+            self.plot3.setData(x=self.timeData * 1e12, y=self.timeMarginal)
         else:
-            self.frogImageWidget.setImage(self.scanData, autoRange=False, autoLevels=False)
-#             self.plot5.setData(x=self.posData * 1e3, y=self.scanData)
+            self.frogImageWidget.setImage(np.transpose(self.scanData), autoRange=False, autoLevels=False)
+            self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
 
-    def measureData(self):
-        roiDataFilt = medfilt2d(self.roiData, 5)
+    def measureData(self):        
+        roiDataFilt = medfilt2d(np.double(self.roiData), 5)
         self.spectrumData = np.sum(self.roiData, 1) / self.roiData.shape[1]
         if self.wavelengths is None:
             self.generateWavelengths()
@@ -272,11 +305,15 @@ class TangoDeviceClient(QtGui.QWidget):
 
         # If we are running a scan, update the scan data
         if self.running == True:
-            if self.trendData1 is None:
-                self.trendData1 = self.spectrumData
-            else:
-                self.trendData1 += self.spectrumData
+            
+                
             if self.moving == False and self.moveStart == False:
+                if self.trendData1 is None:
+                    self.trendData1 = self.spectrumData      
+                    self.timeMarginalTmp = self.spectrumData.sum()          
+                else:
+                    self.trendData1 += self.spectrumData
+                    self.timeMarginalTmp += self.spectrumData.sum()
                 self.currentSample += 1
                 if self.currentSample >= self.avgSamples:
                     self.running = False
@@ -287,9 +324,11 @@ class TangoDeviceClient(QtGui.QWidget):
 
     def xAxisUnitsToggle(self):
         if self.timeUnitsRadio.isChecked() == True:
-            self.plot5.setData(x=self.timeData * 1e12, y=self.scanData)
+            self.plot3.setData(x=self.timeData * 1e12, y=self.timeMarginal)
         else:
-            self.plot5.setData(x=self.posData * 1e3, y=self.scanData)
+            self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
+
+        
 
     def closeEvent(self, event):
         for a in self.attributes.itervalues():
@@ -329,6 +368,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.layout = QtGui.QVBoxLayout(self)
         self.tabWidget = QtGui.QTabWidget()
+        self.tabWidget.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum)
         self.gridLayout1 = QtGui.QGridLayout()
         self.gridLayout2 = QtGui.QGridLayout()
         self.gridLayout3 = QtGui.QGridLayout()
@@ -339,6 +379,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.averageSpinbox = QtGui.QSpinBox()
         self.averageSpinbox.setMaximum(100)
         self.averageSpinbox.setValue(self.settings.value('averages', 5).toInt()[0])
+        self.avgSamples = self.settings.value('averages', 5).toInt()[0]
         self.averageSpinbox.editingFinished.connect(self.setAverage)
 
         self.startPosSpinbox = QtGui.QDoubleSpinBox()
@@ -481,11 +522,12 @@ class TangoDeviceClient(QtGui.QWidget):
         self.ROI.setPos([roiPosX, roiPosY], update = True)
         self.ROI.setSize([roiSizeW, roiSizeH], update = True)
         self.spectrumImageWidget.getView().addItem(self.ROI)
-        self.spectrumImageWidget.setSizePolicy(QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Expanding)
+        self.spectrumImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.spectrumImageWidget.getView().setAspectLocked(False)
         self.ROI.blockSignals(False)
 
         self.frogImageWidget = pq.ImageView()
-        self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Expanding)
+        self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
         self.frogImageWidget.getView().setAspectLocked(False)
 
         self.plotWidget = pq.PlotWidget(useOpenGL=True)
@@ -496,26 +538,34 @@ class TangoDeviceClient(QtGui.QWidget):
         self.plot1.antialiasing = True
         self.plotWidget.setAntialiasing(True)
         self.plotWidget.showGrid(True, True)
+        self.plotWidget.setMinimumWidth(200)
+        self.plotWidget.setMaximumWidth(500)
+        self.plotWidget.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding)
 
-#         self.plotWidget2 = pq.PlotWidget(useOpenGL=True)
-#         self.plot3 = self.plotWidget2.plot()
-#         self.plot3.setPen((50, 99, 200))
-#         self.plot4 = self.plotWidget2.plot()
-#         self.plot4.setPen((10, 200, 25))
-#         self.plot3.antialiasing = True
-#         self.plotWidget2.setAntialiasing(True)
-#         self.plotWidget2.showGrid(True, True)
-# 
-#         self.plotWidget3 = pq.PlotWidget(useOpenGL=True)
-#         self.plot5 = self.plotWidget3.plot()
-#         self.plot5.setPen((10, 200, 70))
-#         self.plotWidget3.setAntialiasing(True)
-#         self.plotWidget3.showGrid(True, True)
+        self.plotWidget2 = pq.PlotWidget(useOpenGL=True)
+        self.plot3 = self.plotWidget2.plot()
+        self.plot3.setPen((50, 99, 200))
+        self.plotWidget2.setAntialiasing(True)
+        self.plotWidget2.showGrid(True, True)
+        self.plotWidget2.setMaximumHeight(200)
+        self.plotWidget2.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Maximum)
 
-        plotLayout = QtGui.QHBoxLayout()
+        self.plotWidget3 = pq.PlotWidget(useOpenGL=True)
+        self.plot5 = self.plotWidget3.plot()
+        self.plot5.setPen((10, 200, 70))
+        self.plotWidget3.setAntialiasing(True)
+        self.plotWidget3.showGrid(True, True)
+ 
+        plotLayout = QtGui.QHBoxLayout()        
         plotLayout.addWidget(self.spectrumImageWidget)
         plotLayout.addWidget(self.plotWidget)
-        plotLayout.addWidget(self.frogImageWidget)
+        frogLayout = QtGui.QVBoxLayout()
+         
+        frogLayout = QtGui.QVBoxLayout()
+        frogLayout.addWidget(self.frogImageWidget)
+        frogLayout.addWidget(self.plotWidget2)
+        plotLayout.addLayout(frogLayout)
+        
 
         scanLay = QtGui.QHBoxLayout()
         scanLay.addLayout(self.gridLayout1)
@@ -563,9 +613,15 @@ class TangoDeviceClient(QtGui.QWidget):
         windowPosY = self.settings.value('windowPosY', 100).toInt()[0]
         windowSizeW = self.settings.value('windowSizeW', 800).toInt()[0]
         windowSizeH = self.settings.value('windowSizeH', 300).toInt()[0]
+        if windowPosX < 50:
+            windowPosX = 200
+        if windowPosY < 50:
+            windowPosY = 200
         self.setGeometry(windowPosX, windowPosY, windowSizeW, windowSizeH)
 
-        self.update()
+        self.show()
+        
+
 
 if __name__ == '__main__':
     app = QtGui.QApplication(sys.argv)
