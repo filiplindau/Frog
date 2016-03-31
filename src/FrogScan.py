@@ -4,6 +4,7 @@ Created on 7 Mar 2016
 @author: Filip Lindau
 '''
 # -*- coding:utf-8 -*-
+from patsy.redundancy import pick_contrasts_for_term
 """
 Created on Oct 1, 2015
 
@@ -16,6 +17,7 @@ from PyQt4 import QtGui, QtCore
 
 from scipy.signal import medfilt2d
 from matplotlib.pyplot import imsave
+from scipy.misc import imread
 from PIL import Image
 
 import time
@@ -32,7 +34,7 @@ f = logging.Formatter("%(asctime)s - %(module)s.   %(funcName)s - %(levelname)s 
 fh = logging.StreamHandler()
 fh.setFormatter(f)
 root.addHandler(fh)
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.CRITICAL)
 
 from AttributeReadThreadClass import AttributeClass
 import pyqtgraph as pq
@@ -40,7 +42,7 @@ import PyTango as pt
 import threading
 import numpy as np
 
-
+import FrogCalculationCL as FrogCalculation
 
 class MyQSplitter(QtGui.QSplitter):
     def __init__(self, parent = None):
@@ -110,6 +112,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.trendData1 = None
         self.trendData2 = None
         self.scanData = np.array([])
+        self.scanDataRoi = np.array([])
         self.timeData = np.array([])
         self.timeMarginal = np.array([])
         self.timeMarginalTmp = 0
@@ -126,6 +129,8 @@ class TangoDeviceClient(QtGui.QWidget):
         self.moveStart = False
         self.scanTimer = QtCore.QTimer()
         self.scanTimer.timeout.connect(self.scanUpdateAction)
+        
+        self.frogCalc = FrogCalculation.FrogCalculation(useCPU=True)
 
         
         
@@ -275,8 +280,9 @@ class TangoDeviceClient(QtGui.QWidget):
         self.spectrumData = np.sum(self.roiData, 1) / self.roiData.shape[1]
         if self.wavelengths is None:
             self.generateWavelengths()
-        self.plot1.setData(x=self.wavelengths, y=self.spectrumData)
-        self.plot1.update()
+        if self.wavelengths.shape[0] == self.spectrumData.shape[0]:
+            self.plot1.setData(x=self.wavelengths, y=self.spectrumData)
+            self.plot1.update()
 
 #         goodInd = np.arange(self.signalStartIndex.value(), self.signalEndIndex.value() + 1, 1)
 #         bkgInd = np.arange(self.backgroundStartIndex.value(), self.backgroundEndIndex.value() + 1, 1)
@@ -328,7 +334,204 @@ class TangoDeviceClient(QtGui.QWidget):
         else:
             self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
 
+    def updateFrogPlotView(self):
+        self.frogResultViewbox.setGeometry(self.frogResultPlotitem.vb.sceneBoundingRect())
+        self.frogResultViewbox.linkedViewChanged(self.frogResultPlotitem.vb, self.frogResultViewbox.XAxis)
         
+    def updateFrogResultPlot(self):
+        if self.frogEtCheckbox.isChecked() == True:
+            self.frogResultPlotAbs.show()
+        else:
+            self.frogResultPlotAbs.hide()
+            
+        if self.frogPhaseCheckbox.isChecked() == True:
+            self.frogResultPlotPhase.show()
+        else:
+            self.frogResultPlotPhase.hide()
+            
+    def calculatePulseParameters(self):
+        t = self.frogCalc.getT()
+        Et = self.frogCalc.getTraceAbs()
+        
+        # Use first 10% of trace as background level
+        bkg = Et[0:np.maximum(2,np.int(Et.shape[0]*0.1))].mean()*1.1
+        EtN = np.maximum(0, Et-bkg)/(Et.max()-bkg)
+        aboveInd = np.argwhere(EtN>0.5)
+        tFWHM = np.abs(t[aboveInd[-1,0]]-t[aboveInd[0,0]])
+        s_t = '%.3f'%(tFWHM*1e12)
+        self.frogEtFWHMLabel.setText(''.join((s_t, ' ps')))
+
+        t0 = np.trapz(EtN*t, t) / np.trapz(EtN, t)
+        tRMS = np.sqrt(np.trapz(EtN*(t-t0)**2, t) / np.trapz(EtN, t))
+        s_t = '%.3f'%(tRMS*1e12)
+        self.frogEtRMSLabel.setText(''.join((s_t, ' ps')))
+        
+    def updateFrogRoi(self):
+        root.debug(''.join(('Roi pos: ', str(self.frogRoi.pos()))))
+        root.debug(''.join(('Roi size: ', str(self.frogRoi.size()))))
+        if self.scanData.size != 0: 
+            root.debug(''.join(('Scan data: ', str(self.scanData.shape))))
+            
+            bkg = self.scanData[0,:]
+            bkgImg = self.scanData - np.tile(bkg, (self.scanData.shape[0], 1))
+            roiImg = self.frogRoi.getArrayRegion(bkgImg, self.frogImageWidget.getImageItem(), axes=(1,0))
+            roiImg = roiImg / roiImg.max()
+            
+            root.debug('Slice complete')
+            thr = self.frogThresholdSpinbox.value()
+            kernel = self.frogKernelSpinbox.value()
+            root.debug('Starting medfilt...')
+            filteredImg = medfilt2d(roiImg, kernel) - thr
+#             filteredImg = roiImg - thr
+            root.debug('Filtering complete')
+            filteredImg[filteredImg<0.0] = 0.0
+            root.debug('Threshold complete')
+            self.frogRoiImageWidget.setImage(filteredImg)
+            root.debug('Set image complete')
+            self.frogRoiImageWidget.autoRange()
+            root.debug('Autorange complete')
+        
+    def startFrogInversion(self):
+        data = np.uint8(self.scanDataRoi)
+        N = self.frogNSpinbox.value()
+        if self.timeData.shape != 0:
+            dt = self.timeData[1]-self.timeData[0]
+        else:
+            dt = 1e-15        
+        
+        frogImg = self.frogRoiImageWidget.getImageItem().image 
+        if frogImg.size > 0:
+            lStartInd = np.int(self.frogRoi.pos()[0])
+            lStopInd = np.int(self.frogRoi.pos()[0])+np.ceil(self.frogRoi.size()[0])
+            root.debug(''.join(('Wavelength range: ', str(self.wavelengths[lStartInd]),  '-', str(self.wavelengths[lStopInd])))) 
+            l_start = self.wavelengths[lStartInd]*1e-9
+            l_stop = self.wavelengths[lStopInd]*1e-9
+            l0 = (l_stop + l_start)/2
+
+            tStartInd = np.int(self.frogRoi.pos()[1])
+            tStopInd = np.int(self.frogRoi.pos()[1])+np.ceil(self.frogRoi.size()[1])
+            root.debug(''.join(('Time range: ', str(self.timeData[tStartInd]),  '-', str(self.timeData[tStopInd])))) 
+            tau_start = self.timeData[tStartInd]
+            tau_stop = self.timeData[tStopInd]
+            
+            self.frogCalc.initPulseFieldRandom(N, dt, l0)
+            self.frogCalc.conditionFrogTrace(frogImg, l_start, l_stop, tau_start, tau_stop)
+            
+            self.frogCalcImageWidget.setImage(self.frogCalc.I_w_tau)
+            self.frogCalcImageWidget.autoRange()
+            self.frogCalcImageWidget.update()
+            
+            if str(self.frogMethodCombobox.currentText()) == 'Vanilla':
+                er = self.frogCalc.runCycleVanilla(self.frogIterationsSpinbox.value())
+            elif str(self.frogMethodCombobox.currentText()) == 'GP':
+                er = self.frogCalc.runCycleGP(self.frogIterationsSpinbox.value())
+            
+            self.frogErrorPlot.setData(er)
+            self.frogErrorPlot.update()
+            
+            t = self.frogCalc.getT()
+            Et = self.frogCalc.getTraceAbs()
+            Ephi = self.frogCalc.getTracePhase()
+            
+            self.frogResultPlotAbs.setData(x=t, y=Et)
+            self.frogResultPlotAbs.update()
+            self.frogResultPlotPhase.setData(x=t, y=Ephi)
+            self.frogResultPlotPhase.update()
+            
+            self.frogCalcResultImageWidget.setImage(np.abs(self.frogCalc.Esig_w_tau_cla.get())**2)
+            self.frogCalcResultImageWidget.autoRange()
+            self.frogCalcResultImageWidget.update()
+            
+            self.calculatePulseParameters()
+
+    def loadFrogTrace(self):
+        filename = str(QtGui.QFileDialog.getOpenFileName(self, 'Select frog trace', '.', 'frogtrace_*.png'))
+        root.debug(''.join(('File selected: ', str(filename))))
+        
+        fNameRoot = '_'.join((filename.split('_')[0:3]))
+        tData = np.loadtxt(''.join((fNameRoot,'_timevector.txt')))
+        tData = tData-tData.mean()
+        lData = np.loadtxt(''.join((fNameRoot,'_wavelengthvector.txt')))
+        pic = np.float32(imread(''.join((fNameRoot,'_image.png'))))
+        
+        root.debug(''.join(('Pic: ', str(pic.shape))))
+        root.debug(''.join(('Time data: ', str(tData.shape), ' ', str(tData[0]))))
+        root.debug(''.join(('l data: ', str(lData.shape), ' ', str(lData[0]))))
+        
+        self.scanData = pic
+        self.timeData = tData
+        self.wavelengths = lData
+        self.centerWavelengthSpinbox.setValue(lData.mean())
+        
+        self.frogImageWidget.setImage(np.transpose(pic))
+        self.frogImageWidget.autoLevels()
+        self.frogImageWidget.autoRange()
+        self.updateFrogRoi()
+
+
+    def tabChanged(self, i):
+        root.debug(''.join(('Tab changed: ', str(i))))
+        root.debug(''.join(('Found ', str(self.plotLayout.count()), ' widgets')))
+        # Remove all widgets:
+        for widgetInd in range(self.plotLayout.count()):
+            layItem = self.plotLayout.itemAt(0)
+            if type(layItem) is QtGui.QVBoxLayout:
+                root.debug(''.join(('Found ', str(layItem.count()), ' inner widgets')))
+#                 self.frogLayout.removeWidget(self.plotWidget2)
+#                 self.frogLayout.removeWidget(self.frogImageWidget)
+                for wInd2 in range(layItem.count()):                
+                    layItem.takeAt(0)
+                
+            self.plotLayout.takeAt(0)
+        self.plotLayout.removeWidget(self.plotWidget2)
+            
+        # Re-populate
+        if i == 0 or i == 1:
+            self.plotLayout.addWidget(self.spectrumImageWidget)
+            self.plotLayout.addWidget(self.plotWidget)
+            self.frogLayout.addWidget(self.frogImageWidget)            
+#             self.invisibleLayout.addWidget(self.plotWidget2)
+#             self.invisibleLayout.addWidget(self.plotWidget)
+            self.frogLayout.addWidget(self.plotWidget2)
+            self.plotLayout.addLayout(self.frogLayout)
+            self.plotWidget2.setVisible(True)
+            self.plotWidget.setVisible(True)
+            self.spectrumImageWidget.setVisible(True)
+            self.frogErrorWidget.setVisible(False)
+            self.frogResultWidget.setVisible(False)
+            self.frogRoiImageWidget.setVisible(False)
+            self.frogCalcImageWidget.setVisible(False)
+            self.frogCalcResultImageWidget.setVisible(False)
+            self.frogRoi.setVisible(False)
+        elif i == 2:
+            self.plotWidget2.setVisible(False)
+            self.plotWidget.setVisible(False)
+            self.spectrumImageWidget.setVisible(False)
+            self.frogErrorWidget.setVisible(True)
+            self.frogRoiImageWidget.setVisible(True)
+            self.frogRoi.setVisible(True)
+            self.frogResultWidget.setVisible(True)
+            self.frogCalcImageWidget.setVisible(True)
+            self.frogCalcResultImageWidget.setVisible(True)
+            
+            self.frogLayout.addWidget(self.frogImageWidget)
+            self.frogLayout.addWidget(self.frogRoiImageWidget)
+            self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+            self.plotLayout.addLayout(self.frogLayout)
+            self.plotLayout.setStretchFactor(self.frogLayout, 3)
+#             self.plotLayout.addWidget(self.frogImageWidget)
+#             self.plotLayout.setStretchFactor(self.frogImageWidget, 2)
+#             self.plotLayout.addWidget(self.frogRoiImageWidget)
+#             self.plotLayout.setStretchFactor(self.frogRoiImageWidget, 2)
+#             self.plotLayout.addWidget(self.frogErrorWidget)
+#             self.plotLayout.setStretchFactor(self.frogErrorWidget, 1)
+            self.frogLayout2.addWidget(self.frogCalcImageWidget)
+            self.frogLayout2.addWidget(self.frogCalcResultImageWidget)
+            self.plotLayout.addLayout(self.frogLayout2)
+            self.plotLayout.setStretchFactor(self.frogLayout2, 2)
+            self.plotLayout.addWidget(self.frogResultWidget)
+            self.plotLayout.setStretchFactor(self.frogResultWidget, 3)
+            
 
     def closeEvent(self, event):
         for a in self.attributes.itervalues():
@@ -360,8 +563,169 @@ class TangoDeviceClient(QtGui.QWidget):
         self.settings.setValue('windowSizeH', np.int(self.size().height()))
         self.settings.setValue('windowPosX', np.int(self.pos().x()))
         self.settings.setValue('windowPosY', np.int(self.pos().y()))
+        
+        self.settings.setValue('frogIterations', np.int(self.frogIterationsSpinbox.value()))
+        self.settings.setValue('frogSize', np.int(self.frogNSpinbox.value()))
+        self.settings.setValue('frogMethod', np.int(self.frogMethodCombobox.currentIndex()))
+        self.settings.setValue('frogThreshold', np.float(self.frogThresholdSpinbox.value()))
+        self.settings.setValue('frogKernel', np.int(self.frogKernelSpinbox.value()))
+        self.settings.setValue('frogRoiPosX', np.int(self.frogRoi.pos()[0]))
+        self.settings.setValue('frogRoiPosY', np.int(self.frogRoi.pos()[1]))
+        self.settings.setValue('frogRoiSizeW', np.int(self.frogRoi.size()[0]))
+        self.settings.setValue('frogRoiSizeH', np.int(self.frogRoi.size()[1]))
+        
         self.settings.sync()
         event.accept()
+        
+    def setupFrogLayout(self):
+        self.frogNSpinbox = QtGui.QSpinBox()
+        self.frogNSpinbox.setMinimum(0)
+        self.frogNSpinbox.setMaximum(4096)
+#         self.frogNSpinbox.setValue(128)
+        self.frogNSpinbox.setValue(self.settings.value('frogSize', 128).toInt()[0])
+        self.frogMethodCombobox = QtGui.QComboBox()
+        self.frogMethodCombobox.addItem('Vanilla')
+        self.frogMethodCombobox.addItem('GP')
+        self.frogMethodCombobox.setCurrentIndex(self.settings.value('frogMethod', 0).toInt()[0])
+        self.frogStartButton = QtGui.QPushButton('Start')
+        self.frogStartButton.clicked.connect(self.startFrogInversion)
+        self.frogIterationsSpinbox = QtGui.QSpinBox()
+#         self.frogIterationsSpinbox.setValue(20)
+        self.frogIterationsSpinbox.setMinimum(0)
+        self.frogIterationsSpinbox.setMaximum(999)
+        self.frogIterationsSpinbox.setValue(self.settings.value('frogIterations', 20).toInt()[0])
+        self.frogThresholdSpinbox = QtGui.QDoubleSpinBox()
+        self.frogThresholdSpinbox.setMinimum(0.0)
+        self.frogThresholdSpinbox.setMaximum(1.0)
+        self.frogThresholdSpinbox.setSingleStep(0.01)
+        self.frogThresholdSpinbox.setDecimals(3)
+        self.frogThresholdSpinbox.setValue(self.settings.value('frogThreshold', 0.05).toDouble()[0])
+        self.frogThresholdSpinbox.editingFinished.connect(self.updateFrogRoi)
+        self.frogKernelSpinbox = QtGui.QSpinBox()
+        self.frogKernelSpinbox.setMinimum(1)
+        self.frogKernelSpinbox.setMaximum(99)
+        self.frogKernelSpinbox.setSingleStep(2)
+        self.frogKernelSpinbox.setValue(self.settings.value('frogKernel', 3).toInt()[0])
+        self.frogKernelSpinbox.editingFinished.connect(self.updateFrogRoi)
+        self.frogLoadButton = QtGui.QPushButton('Load')
+        self.frogLoadButton.clicked.connect(self.loadFrogTrace)
+        
+        self.frogEtCheckbox = QtGui.QCheckBox()
+        self.frogEtCheckbox.setChecked(True)
+        self.frogEtCheckbox.stateChanged.connect(self.updateFrogResultPlot)
+        self.frogPhaseCheckbox = QtGui.QCheckBox()
+        self.frogPhaseCheckbox.setChecked(True)
+        self.frogPhaseCheckbox.stateChanged.connect(self.updateFrogResultPlot)
+        
+        self.frogEtFWHMLabel = QtGui.QLabel()
+        self.frogEtRMSLabel = QtGui.QLabel()
+                                                         
+        self.frogGridLayout1 = QtGui.QGridLayout()
+        self.frogGridLayout1.addWidget(QtGui.QLabel("Image threshold"), 0, 0)
+        self.frogGridLayout1.addWidget(self.frogThresholdSpinbox, 0, 1)
+        self.frogGridLayout1.addWidget(QtGui.QLabel("Median kernel"), 1, 0)
+        self.frogGridLayout1.addWidget(self.frogKernelSpinbox, 1, 1)
+        self.frogGridLayout1.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding), 2, 0)
+
+        self.frogGridLayout2 = QtGui.QGridLayout()
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog method"), 0, 0)
+        self.frogGridLayout2.addWidget(self.frogMethodCombobox, 0, 1)
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog size (pow 2)"), 1, 0)
+        self.frogGridLayout2.addWidget(self.frogNSpinbox, 1, 1)        
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Iterations"), 2, 0)
+        self.frogGridLayout2.addWidget(self.frogIterationsSpinbox, 2, 1)
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Invert trace"), 3, 0)
+        self.frogGridLayout2.addWidget(self.frogStartButton, 3, 1)
+
+        self.frogGridLayout3 = QtGui.QGridLayout()
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Load trace"), 0, 0)
+        self.frogGridLayout3.addWidget(self.frogLoadButton, 0, 1)
+        self.frogGridLayout3.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding), 2, 0)
+
+        self.frogGridLayout4 = QtGui.QGridLayout()
+        self.frogGridLayout4.addWidget(QtGui.QLabel("Show Et"), 0, 0)
+        self.frogGridLayout4.addWidget(self.frogEtCheckbox, 0, 1)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("Show phase"), 1, 0)
+        self.frogGridLayout4.addWidget(self.frogPhaseCheckbox, 1, 1)
+        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum), 2, 0)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("t_FWHM"), 3, 0)
+        self.frogGridLayout4.addWidget(self.frogEtFWHMLabel, 3, 1)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("t_RMS"), 4, 0)
+        self.frogGridLayout4.addWidget(self.frogEtRMSLabel, 4, 1)
+        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding), 5, 0)
+        
+        # Error plot widget
+        self.frogErrorWidget = pq.PlotWidget(useOpenGL=True)
+        self.frogErrorPlot = self.frogErrorWidget.plot()
+        self.frogErrorPlot.setPen((10, 200, 70))
+        self.frogErrorWidget.setAntialiasing(True)
+        self.frogErrorWidget.showGrid(True, True)
+        self.frogErrorWidget.plotItem.setLabels(left='Reconstruction error')
+        self.frogErrorWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Minimum)
+        self.frogErrorWidget.setMinimumHeight(80)
+        self.frogErrorWidget.setMaximumHeight(120)
+
+        # E field plot widget
+        self.frogResultWidget = pq.PlotWidget(useOpenGL=True)
+        self.frogResultPlotAbs = self.frogResultWidget.plot()
+        self.frogResultPlotAbs.setPen((10, 200, 70))
+        
+        self.frogResultPlotitem = self.frogResultWidget.plotItem
+        self.frogResultPlotitem.setLabels(left='abs(Et)')
+        self.frogResultViewbox = pq.ViewBox()
+        self.frogResultPlotitem.showAxis('right')
+        self.frogResultPlotitem.scene().addItem(self.frogResultViewbox)
+        self.frogResultPlotitem.getAxis('right').linkToView(self.frogResultViewbox)
+        self.frogResultViewbox.setXLink(self.frogResultPlotitem)
+        self.frogResultPlotitem.getAxis('right').setLabel('Phase / rad')
+        self.frogResultPlotPhase = pq.PlotCurveItem()
+        self.frogResultPlotPhase.setPen((200, 70, 10))
+        self.frogResultViewbox.addItem(self.frogResultPlotPhase)
+        self.frogResultPlotitem.vb.sigResized.connect(self.updateFrogPlotView)        
+        self.frogResultWidget.setAntialiasing(True)
+        self.frogResultWidget.showGrid(True, True)
+        self.frogResultWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.updateFrogPlotView()
+
+        # Raw frog trace with roi selector
+        self.frogImageWidget = pq.ImageView()
+        self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.frogImageWidget.getView().setAspectLocked(False)
+        self.frogRoi = pq.RectROI([0, 300], [600, 20], pen=(0,9))
+        self.frogRoi.sigRegionChangeFinished.connect(self.updateFrogRoi)
+        self.frogRoi.blockSignals(True)
+        
+#         roiPosX = 10
+#         roiPosY = 10
+#         roiSizeH = 20
+#         roiSizeW = 500
+        roiPosX = self.settings.value('frogRoiPosX', 10).toInt()[0]
+        roiPosY = self.settings.value('frogRoiPosY', 10).toInt()[0]
+        root.debug(''.join(('roiPos: ', str(roiPosX))))
+        roiSizeW = self.settings.value('frogRoiSizeW', 100).toInt()[0]
+        roiSizeH = self.settings.value('frogRoiSizeH', 10).toInt()[0]
+        
+        self.frogRoi.setPos([roiPosX, roiPosY], update = True)
+        self.frogRoi.setSize([roiSizeW, roiSizeH], update = True)
+        self.frogImageWidget.getView().addItem(self.frogRoi)
+        
+        self.frogRoi.blockSignals(False)
+
+        # Filtered frog trace roi 
+        self.frogRoiImageWidget = pq.ImageView()
+        self.frogRoiImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.frogRoiImageWidget.getView().setAspectLocked(False)
+        
+        self.frogCalcImageWidget = pq.ImageView()
+        self.frogCalcImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.frogCalcImageWidget.getView().setAspectLocked(False)
+        self.frogCalcResultImageWidget = pq.ImageView()
+        self.frogCalcResultImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.frogCalcResultImageWidget.getView().setAspectLocked(False)
+        self.frogCalcResultImageWidget.view.setXLink(self.frogCalcImageWidget.view)
+        self.frogCalcResultImageWidget.view.setYLink(self.frogCalcImageWidget.view)
+        
+        self.frogLayout2 = QtGui.QVBoxLayout()
 
     def setupLayout(self):
         root.debug('Setting up layout')
@@ -526,9 +890,6 @@ class TangoDeviceClient(QtGui.QWidget):
         self.spectrumImageWidget.getView().setAspectLocked(False)
         self.ROI.blockSignals(False)
 
-        self.frogImageWidget = pq.ImageView()
-        self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
-        self.frogImageWidget.getView().setAspectLocked(False)
 
         self.plotWidget = pq.PlotWidget(useOpenGL=True)
         self.plot1 = self.plotWidget.plot()
@@ -550,22 +911,10 @@ class TangoDeviceClient(QtGui.QWidget):
         self.plotWidget2.setMaximumHeight(200)
         self.plotWidget2.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Maximum)
 
-        self.plotWidget3 = pq.PlotWidget(useOpenGL=True)
-        self.plot5 = self.plotWidget3.plot()
-        self.plot5.setPen((10, 200, 70))
-        self.plotWidget3.setAntialiasing(True)
-        self.plotWidget3.showGrid(True, True)
  
-        plotLayout = QtGui.QHBoxLayout()        
-        plotLayout.addWidget(self.spectrumImageWidget)
-        plotLayout.addWidget(self.plotWidget)
-        frogLayout = QtGui.QVBoxLayout()
-         
-        frogLayout = QtGui.QVBoxLayout()
-        frogLayout.addWidget(self.frogImageWidget)
-        frogLayout.addWidget(self.plotWidget2)
-        plotLayout.addLayout(frogLayout)
-        
+        self.plotLayout = QtGui.QHBoxLayout()        
+        self.plotLayout.addWidget(self.spectrumImageWidget)
+        self.plotLayout.addWidget(self.plotWidget)            
 
         scanLay = QtGui.QHBoxLayout()
         scanLay.addLayout(self.gridLayout1)
@@ -594,7 +943,24 @@ class TangoDeviceClient(QtGui.QWidget):
         cameraLay.addLayout(self.camGridLayout1)
         cameraLay.addSpacerItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
         
-        frogLay = QtGui.QHBoxLayout()
+        self.setupFrogLayout()
+        
+        self.frogLayout = QtGui.QVBoxLayout()        
+        self.frogLayout.addWidget(self.frogImageWidget)
+        self.frogLayout.addWidget(self.plotWidget2)
+        self.plotLayout.addLayout(self.frogLayout)
+        
+        frogLay = QtGui.QHBoxLayout()        
+        frogLay.addLayout(self.frogGridLayout1)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))        
+        frogLay.addLayout(self.frogGridLayout2)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
+        frogLay.addLayout(self.frogGridLayout3)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
+        frogLay.addWidget(self.frogErrorWidget)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
+        frogLay.addLayout(self.frogGridLayout4)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
         
         self.tabCameraWidget = QtGui.QWidget()
         self.tabCameraWidget.setLayout(cameraLay)
@@ -605,9 +971,12 @@ class TangoDeviceClient(QtGui.QWidget):
         self.tabWidget.addTab(self.tabScanWidget, 'Scan')
         self.tabWidget.addTab(self.tabCameraWidget, 'Camera')        
         self.tabWidget.addTab(self.tabFrogWidget, 'Frog')
+        self.tabWidget.currentChanged.connect(self.tabChanged)
         self.layout.addWidget(self.tabWidget)
 #         self.layout.addLayout(scanLay)
-        self.layout.addLayout(plotLayout)
+        self.layout.addLayout(self.plotLayout)
+        
+        self.invisibleLayout = QtGui.QHBoxLayout()
         
         windowPosX = self.settings.value('windowPosX', 100).toInt()[0]
         windowPosY = self.settings.value('windowPosY', 100).toInt()[0]
@@ -618,6 +987,8 @@ class TangoDeviceClient(QtGui.QWidget):
         if windowPosY < 50:
             windowPosY = 200
         self.setGeometry(windowPosX, windowPosY, windowSizeW, windowSizeH)
+        
+        self.tabChanged(0)
 
         self.show()
         
@@ -628,5 +999,7 @@ if __name__ == '__main__':
     myapp = TangoDeviceClient(cameraName, motorName)
     myapp.show()
     sys.exit(app.exec_())
+
+
 
 

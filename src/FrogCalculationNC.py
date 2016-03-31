@@ -5,6 +5,8 @@ Created on 3 Feb 2016
 '''
 
 import numpy as np
+from scipy.misc import imread
+from scipy.signal import medfilt2d
 from scipy.interpolate import interp2d
 #from scipy.optimize import minimize_scalar as fmin
 from scipy.optimize import fmin as fmin
@@ -268,7 +270,7 @@ class FrogCalculation(object):
         root.debug('Generating new Esig_t_tau from SHG')  
         t0 = time.clock()
 
-#         N = self.Et.shape[0]
+        N = self.Et.shape[0]
         Et_mat = np.outer(self.P, self.G)    # Repeat Et into a matrix
 #         i = np.arange(N*N)   
 #         i2 = np.arange(N).repeat(N)
@@ -350,7 +352,30 @@ class FrogCalculation(object):
         self.P = self.Et
         self.G = self.Et
         root.debug(''.join(('Time spent: ', str(time.clock()-t0))))
+
+    def loadFrogTrace(self, filename, thr=0.0, lStartPixel=0, lStopPixel=-1, tStartPixel=0, tStopPixel=-1):
+        fNameRoot = '_'.join((filename.split('_')[0:3]))
+        tData = np.loadtxt(''.join((fNameRoot,'_timevector.txt')))
+        tData = tData-tData.mean()
+        lData = np.loadtxt(''.join((fNameRoot,'_wavelengthvector.txt')))*1e-9
+        pic = np.float32(imread(''.join((fNameRoot,'_image.png'))))
+        picN = pic/pic.max()
         
+        if tStopPixel == -1:
+            tStopPixel = picN.shape[0]-1
+        if lStopPixel == -1:
+            lStopPixel = picN.shape[1]-1
+            
+        picF = self.filterFrogTrace(picN, 3, thr)
+        
+        self.conditionFrogTrace(picF[tStartPixel:tStopPixel, lStartPixel:lStopPixel], 
+                                lData[lStartPixel], lData[lStopPixel], tData[tStartPixel], tData[tStopPixel])
+
+    def filterFrogTrace(self, Idata, kernel=5, thr=0.1):
+        Idata_f = medfilt2d(Idata, kernel)-thr
+        Idata_f[Idata_f<0.0] = 0.0
+        return Idata_f
+            
     def conditionFrogTrace(self, Idata, l_start, l_stop, tau_start, tau_stop):
         ''' Take the measured intensity data and interpolate it to the
         internal w, tau grid.
@@ -575,6 +600,7 @@ class FrogCalculation(object):
         return np.array(er)
     
     def setupGPAlgorithm(self):
+        N = self.Et.shape[0]
         self.initShiftInd(N)
         self.dZ = None
         self.P = self.Et

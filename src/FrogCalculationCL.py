@@ -8,6 +8,7 @@ import pyopencl as cl
 import pyopencl.array as cla
 import matplotlib.pyplot as mpl
 from gpyfft.fft import FFT
+from scipy.misc import imread
 from scipy.interpolate import interp2d
 from scipy.signal import medfilt2d
 #from scipy.optimize import minimize_scalar as fmin
@@ -33,8 +34,9 @@ root.addHandler(fh)
 root.setLevel(logging.CRITICAL)
     
 class FrogCalculation(object):
-    def __init__(self):
-        self.useGPU = True
+    def __init__(self, useCPU = False):
+        self.useCPU = useCPU
+        self.useCL = True
         self.rollFFT = True # There is a peculiarity in the fft calculation of a set of vectors
                         # so that the first fft end up in the end... Set this switch to roll
                         # back the last line of the Esig_w_tau fft matrix
@@ -45,8 +47,10 @@ class FrogCalculation(object):
         
         self.Esignal_w = None
         self.Esignal_t = None
+        
+        self.Et_cla = None
                 
-        self.initCl(useCPU = False)
+        self.initCl(useCPU = useCPU)
         
     def initCl(self, useCPU = False):
         root.debug('Initializing opencl')
@@ -74,8 +78,15 @@ class FrogCalculation(object):
                         v = vTmp
         else:
             for p in pl:
+                if 'amd' in p.vendor.lower():
+                    vTmp = 'amd'
+                elif 'nvidia' in p.vendor.lower():
+                    vTmp = 'nvidia'
+                else:
+                    vTmp = 'intel'
                 d = p.get_devices(device_type=cl.device_type.CPU)
                 if d != []:
+                    v = vTmp
                     break
         root.debug(''.join(('Using device ', str(d), ' from ', v)))
         self.ctx = cl.Context(devices = d)
@@ -173,7 +184,7 @@ class FrogCalculation(object):
         
         # Finally calculate a gaussian E-field from the 
         self.Et = (np.exp(1j*2*np.pi*np.random.rand(N))).astype(self.dtype_c)
-                        
+                                
         root.info('Finished')     
 
     def initPulseFieldGaussian(self, N, t_res, l0, tau_pulse):
@@ -231,6 +242,24 @@ class FrogCalculation(object):
         
         root.info('Finished')  
         
+    def loadFrogTrace(self, filename, thr=0.0, lStartPixel=0, lStopPixel=-1, tStartPixel=0, tStopPixel=-1):
+        fNameRoot = '_'.join((filename.split('_')[0:3]))
+        tData = np.loadtxt(''.join((fNameRoot,'_timevector.txt')))
+        tData = tData-tData.mean()
+        lData = np.loadtxt(''.join((fNameRoot,'_wavelengthvector.txt')))*1e-9
+        pic = np.float32(imread(''.join((fNameRoot,'_image.png'))))
+        picN = pic/pic.max()
+        
+        if tStopPixel == -1:
+            tStopPixel = picN.shape[0]-1
+        if lStopPixel == -1:
+            lStopPixel = picN.shape[1]-1
+            
+        picF = self.filterFrogTrace(picN, 3, thr)
+        
+        self.conditionFrogTrace(picF[tStartPixel:tStopPixel, lStartPixel:lStopPixel], 
+                                lData[lStartPixel], lData[lStopPixel], tData[tStartPixel], tData[tStopPixel])
+        
     def conditionFrogTrace(self, Idata, l_start, l_stop, tau_start, tau_stop):
         ''' Take the measured intensity data and interpolate it to the
         internal w, tau grid.
@@ -283,7 +312,9 @@ class FrogCalculation(object):
         return Idata_i, w_data, tau_data
     
     def filterFrogTrace(self, Idata, kernel=5, thr=0.1):
-        Idata_f = medfilt2d(Idata, kernel)
+        Idata_f = medfilt2d(Idata, kernel)-thr
+        Idata_f[Idata_f<0.0] = 0.0
+        return Idata_f
     
     def generateEsig_t_tau_SHG(self):
         ''' Generate the time shifted E-field matrix for the SHG process.
@@ -325,7 +356,7 @@ class FrogCalculation(object):
         tic = time.clock()
 #         transform = FFT(self.ctx, self.q, (self.Esig_t_tau_cla,) , (self.Esig_w_tau_cla,) , axes = [1])        
 #         events = transform.enqueue()
-        if self.useGPU == True:
+        if self.useCL == True:
             events = self.Esig_w_tau_fft.enqueue()
             for e in events:
                 e.wait()
@@ -355,7 +386,7 @@ class FrogCalculation(object):
         ev = cl.enqueue_nd_range_kernel(self.q, krn, self.Esig_w_tau.shape, None)
         ev.wait()
 
-#         if self.useGPU == True:
+#         if self.useCL == True:
 #             krn = self.progs.progs['applyIntensityData'].applyIntensityData
 #             krn.set_scalar_arg_dtypes((None, None, np.int32))
 #             krn.set_args(self.Esig_w_tau_cla.data, self.I_w_tau_cla.data, self.N)
@@ -380,7 +411,7 @@ class FrogCalculation(object):
             
 #         self.Esig_t_tau_p_cla.set(np.fft.ifft(self.Esig_w_tau_cla.get(), axis=1).astype(self.dtype_c).copy())
             
-        if self.useGPU == True:
+        if self.useCL == True:
             events = self.Esig_t_tau_p_fft.enqueue(forward = False)
             for e in events:
                 e.wait()
@@ -635,26 +666,26 @@ class FrogCalculation(object):
        
         if algo == 'SHG':
             # Calculate the gradient of the functional distance:
-            if self.useGPU == True:
+            if self.useCL == True:
                 self.gradZSHG_gpu()
             else:
                 self.gradZSHG_naive()
             
             # Calculate error minimization polynomial
-            if self.useGPU == True:
+            if self.useCL == True:
                 p1 = self.minZerrKernSHG_gpu()
             else:
                 p1 = self.minZerrKernSHG_naive()
             root.debug(''.join(('Poly: ', str(p1[4]), ' x^4 + ', str(p1[3]), ' x^3 + ', str(p1[2]), ' x^2 + ', str(p1[1]), ' x + ', str(p1[0]))))
         elif algo == 'SD':
             # Calculate the gradient of the functional distance:
-            if self.useGPU == True:
+            if self.useCL == True:
                 self.gradZSD_gpu()
             else:
                 self.gradZSD_naive()
             
             # Calculate error minimization polynomial
-            if self.useGPU == True:
+            if self.useCL == True:
                 p1 = self.minZerrKernSD_gpu()
             else:
                 p1 = self.minZerrKernSD_naive()
@@ -674,7 +705,7 @@ class FrogCalculation(object):
         X = X[minZInd].astype(self.dtype_r)
 
         # Update Et
-        if self.useGPU == True:
+        if self.useCL == True:
             krn = self.progs.progs['updateEtGP'].updateEtGP
             krn.set_scalar_arg_dtypes((None, None, self.dtype_r, np.int32))
             krn.set_args(self.Et_cla.data, self.dZ_cla.data, X, self.N)
@@ -736,13 +767,15 @@ class FrogCalculation(object):
         return self.t
                   
     def setupVanillaAlgorithm(self):
-        pass
+        if self.Et_cla is None:
+            self.initClBuffers()
+        
                   
-    def runCycleVanilla(self, cycles = 1, algo = 'SHG', useGPU = None):
+    def runCycleVanilla(self, cycles = 1, algo = 'SHG', useCL = None):
         root.debug('Starting FROG reconstruction cycle using the vanilla algorithm')
-        if useGPU is not None:
-            self.useGPU = useGPU
-            self.rollFFT = useGPU
+        if useCL is not None:
+            self.useCL = useCL
+            self.rollFFT = useCL
         
         t0 = time.clock()
         er = []
@@ -769,13 +802,15 @@ class FrogCalculation(object):
         return np.array(er)
 
     def setupGPAlgorithm(self):
-        pass
+        if self.Et_cla is None:
+            self.initClBuffers()
+        
                   
-    def runCycleGP(self, cycles = 1, algo = 'SHG', useGPU = None):
+    def runCycleGP(self, cycles = 1, algo = 'SHG', useCL = None):
         root.debug('Starting FROG reconstruction cycle using the GP algorithm')
-        if useGPU is not None:
-            self.useGPU = useGPU
-            self.rollFFT = useGPU
+        if useCL is not None:
+            self.useCL = useCL
+            self.rollFFT = useCL
         t0 = time.clock()
         er = []
         self.setupGPAlgorithm()
@@ -836,13 +871,14 @@ if __name__ == '__main__':
     l = gt.getWavelengths()
     t = gt.getTimedelays()
     
-    frog = FrogCalculation()
+    frog = FrogCalculation(useCPU=True)
     
 #    frog.initPulseFieldPerfect(128, dt, 800e-9)
 #    frog.initPulseFieldGaussian(N, dt, l0, 50e-15)
 
-    frog.initPulseFieldRandom(N, dt, l0)
-    frog.conditionFrogTrace(IfrogSD[::-1,:], l[0], l[-1], t[0], t[-1])
+    frog.initPulseFieldRandom(N, dt, l0/2)
+#     frog.conditionFrogTrace(IfrogSD[::-1,:], l[0], l[-1], t[0], t[-1])
+    frog.loadFrogTrace('./frogtrace_2016-03-30_14h46_image.png', thr=0.15, lStartPixel=0, lStopPixel=700, tStartPixel=0, tStopPixel=-1)
     frog.initClBuffers()
 #     er=frog.runCycleVanilla(1)
 #    frog.generateEsig_t_tau_SHG()
