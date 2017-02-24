@@ -8,6 +8,7 @@ Calculate FROG with carrier frequency removed
 
 import numpy as np
 import logging
+from scipy.interpolate import interp1d
 
 root = logging.getLogger()
 while len(root.handlers):
@@ -19,14 +20,26 @@ fh.setFormatter(f)
 root.addHandler(fh)
 root.setLevel(logging.DEBUG)
 
+
 class SimulatedPulse(object):
-    def __init__(self, N = 128, dt = 10e-15, l0 = 800e-9, tau = 50e-15):
+    def __init__(self, N=128, dt=10e-15, l0=800e-9, tau=50e-15):
         self.Et = np.zeros(N, dtype=np.complex)
         self.N = N
         self.tau = tau
         self.l0 = l0
         self.tspan = N*dt
         self.dt = dt
+
+        w0 = 2 * np.pi * 299792458.0 / self.l0
+        self.w0 = w0
+
+        # Now we calculate the frequency resolution required by the
+        # time span
+        self.w_res = 2 * np.pi / self.tspan
+
+        # Frequency span is given by the time resolution
+        f_max = 1 / (2 * self.dt)
+        self.w_span = f_max * 2 * 2 * np.pi
         
         self.generateGaussian(tau)
         
@@ -35,10 +48,10 @@ class SimulatedPulse(object):
         w0 = 2*np.pi*299792458.0/self.l0
         self.w0 = w0
         ph = 0.0
-        Eenv = np.exp(-t**2/self.tau**2 + ph)
+        Eenv = np.exp(-t**2/self.tau**2 + ph) * np.exp(0j)
         self.setEt(Eenv, t)
         
-    def generateGaussianQuadraticPhase(self, b = 0):
+    def generateGaussianQuadraticPhase(self, b=0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
         w0 = 2*np.pi*299792458.0/self.l0
         ph = 0.0
@@ -77,25 +90,32 @@ class SimulatedPulse(object):
         Eenv = self.Et.copy()*np.exp(1j*a*t*t)
         self.setEt(Eenv, t)        
         
-    def getFreqSpectrum(self, Nw = None):
+    def getFreqSpectrum(self, Nw=None):
         if Nw is None:
             Nw = self.t.shape[0]
         Ew = np.fft.fftshift(np.fft.fft(self.Et, Nw))        
 #        w0 = 0*2*np.pi*299792458.0/self.l0
-        w = np.fft.fftshift((self.w0 + 2*np.pi*np.fft.fftfreq(Nw, d = self.dt)))
+        w = np.fft.fftshift((self.w0 + 2*np.pi*np.fft.fftfreq(Nw, d=self.dt)))
         return w, Ew
 
-    def getSpectrogram(self, Nl = None):
+    def getSpectrogram(self, Nl=None):
         if Nl is None:
             Nl = self.t.shape[0]
         w, Ew = self.getFreqSpectrum(Nl)
-        l = 2*np.pi*299792458.0/w
-        Il = Ew*Ew.conj()
-#        Il = Il/max(Il)
-        return l, Il
+        c = 299792458.0
+        l = 2*np.pi*c/w
 
-    
-    def setEt(self, Et, t = None):
+        # Resample over linear grid in wavelength
+        E_interp = interp1d(l, Ew, kind='quadratic', fill_value=0.0, bounds_error=False)
+        l_start = 2*np.pi*c / (self.w0 + self.w_span/2)
+        l_stop = 2 * np.pi * c / (self.w0 - self.w_span/2)
+        l_sample = np.linspace(l_start, l_stop, Nl)
+        El = E_interp(l_sample)
+        Il = El*El.conj()
+#        Il = Il/max(Il)
+        return l_sample, Il
+
+    def setEt(self, Et, t=None):
         if t is not None:
             self.t = t
             self.tspan = np.abs(t.max()-t.min())
@@ -111,8 +131,9 @@ class SimulatedPulse(object):
             Ets[shift:] = self.Et[0:self.N-shift]
         return Ets
 
+
 class SimulatedFrogTrace(object):
-    def __init__(self, N = 128, dt = 10e-15, l0 = 800e-9, tau = 50e-15):
+    def __init__(self, N=128, dt=10e-15, l0=800e-9, tau=50e-15):
         self.pulse = SimulatedPulse(N, dt, l0, tau)
         self.l_vec = None
         self.tau_vec = None
@@ -227,20 +248,20 @@ class SimulatedFrogTrace(object):
         return self.tau_vec
     
 if __name__ == '__main__':
-    N = 512
+    Ns = 512
     dt = 4e-15
     tau = 200e-15 / (2*np.sqrt(np.log(2)))
     l0 = 800e-9
-    p = SimulatedPulse(N, dt, l0, tau)
+    p = SimulatedPulse(Ns, dt, l0, tau)
 #     p.generateGaussianCubicPhase(5e24, 1e40)
 #     p.generateGaussianCubicPhase(-5e26, 0)
     p.generateGaussianCubicSpectralPhase(0, 1e-40)
 #     p.generateGaussian(tau)
 #     p.addChirp(1e26)
-    gt = SimulatedFrogTrace(N, dt, l0)
+    gt = SimulatedFrogTrace(Ns, dt, l0)
     gt.pulse = p
-    IfrogSHG = gt.generateSHGTraceDt(N, dt, 410e-9)
-    IfrogSD = gt.generateSDTraceDt(N, dt, 800e-9)
-    IfrogPG = gt.generatePGTraceDt(N, dt, 800e-9)
+    IfrogSHG = gt.generateSHGTraceDt(Ns, dt, 410e-9)
+    IfrogSD = gt.generateSDTraceDt(Ns, dt, 800e-9)
+    IfrogPG = gt.generatePGTraceDt(Ns, dt, 800e-9)
     l = gt.getWavelengths()
     t = gt.getTimedelays()
