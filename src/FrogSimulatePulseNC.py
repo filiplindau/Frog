@@ -10,6 +10,7 @@ import numpy as np
 import logging
 from scipy.interpolate import interp1d
 
+
 root = logging.getLogger()
 while len(root.handlers):
     root.removeHandler(root.handlers[0])
@@ -23,15 +24,19 @@ root.setLevel(logging.DEBUG)
 
 class SimulatedPulse(object):
     def __init__(self, N=128, dt=10e-15, l0=800e-9, tau=50e-15):
+        """
+
+        :param N: number of points in the trace
+        :param dt: time resolution
+        :param l0: central wavelength of the peak
+        :param tau: tentative pulse duration
+        """
         self.Et = np.zeros(N, dtype=np.complex)
         self.N = N
         self.tau = tau
         self.l0 = l0
         self.tspan = N*dt
         self.dt = dt
-
-        w0 = 2 * np.pi * 299792458.0 / self.l0
-        self.w0 = w0
 
         # Now we calculate the frequency resolution required by the
         # time span
@@ -40,34 +45,35 @@ class SimulatedPulse(object):
         # Frequency span is given by the time resolution
         f_max = 1 / (2 * self.dt)
         self.w_span = f_max * 2 * 2 * np.pi
-        
+
+        c = 299792458.0
+        w0 = 2 * np.pi * c / self.l0
+        # delta_l = -2*np.pi*c/self.w_span + np.sqrt(l0**2 + (2*np.pi*c/self.w_span)**2)
+        # w0 = 2*np.pi*c*l0/(l0**2 - delta_l**2)
+        self.w0 = w0
+
         self.generateGaussian(tau)
         
     def generateGaussian(self, tau):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
-        w0 = 2*np.pi*299792458.0/self.l0
-        self.w0 = w0
         ph = 0.0
         Eenv = np.exp(-t**2/self.tau**2 + ph) * np.exp(0j)
         self.setEt(Eenv, t)
         
     def generateGaussianQuadraticPhase(self, b=0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
-        w0 = 2*np.pi*299792458.0/self.l0
         ph = 0.0
         Eenv = np.exp(-t**2/self.tau**2 + 1j*(b*t**2) + ph)
         self.setEt(Eenv, t)
 
     def generateGaussianCubicPhase(self, b = 0, c = 0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
-        w0 = 2*np.pi*299792458.0/self.l0
         ph = 0.0
         Eenv = np.exp(-t**2/self.tau**2 + 1j*(b*t**2 + c*t**3) + ph)
         self.setEt(Eenv, t)
 
     def generateGaussianCubicSpectralPhase(self, b = 0, c = 0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)        
-        w0 = 2*np.pi*299792458.0/self.l0
         f_max = 1/(2*self.dt)
         w_span = f_max*2*2*np.pi
         w = np.linspace(-w_span/2, w_span/2, self.N)
@@ -79,8 +85,6 @@ class SimulatedPulse(object):
         
     def generateDoublePulse(self, tau, deltaT):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
-        w0 = 2*np.pi*299792458.0/self.l0
-        self.w0 = w0
         ph = 0.0
         Eenv = np.exp(-(t+deltaT/2)**2/self.tau**2 + ph) + np.exp(-(t-deltaT/2)**2/self.tau**2 + ph) 
         self.setEt(Eenv, t)
@@ -93,7 +97,7 @@ class SimulatedPulse(object):
     def getFreqSpectrum(self, Nw=None):
         if Nw is None:
             Nw = self.t.shape[0]
-        Ew = np.fft.fftshift(np.fft.fft(self.Et, Nw))        
+        Ew = np.fft.fftshift(np.fft.fft(np.fft.fftshift(self.Et), Nw))
 #        w0 = 0*2*np.pi*299792458.0/self.l0
         w = np.fft.fftshift((self.w0 + 2*np.pi*np.fft.fftfreq(Nw, d=self.dt)))
         return w, Ew
@@ -106,10 +110,11 @@ class SimulatedPulse(object):
         l = 2*np.pi*c/w
 
         # Resample over linear grid in wavelength
-        E_interp = interp1d(l, Ew, kind='quadratic', fill_value=0.0, bounds_error=False)
+        E_interp = interp1d(l, Ew, kind='linear', fill_value=0.0, bounds_error=False)
         l_start = 2*np.pi*c / (self.w0 + self.w_span/2)
         l_stop = 2 * np.pi * c / (self.w0 - self.w_span/2)
-        l_sample = np.linspace(l_start, l_stop, Nl)
+        delta_l = np.min([np.abs(self.l0-l_start), np.abs(self.l0-l_stop)])
+        l_sample = np.linspace(self.l0-delta_l, self.l0+delta_l, Nl)
         El = E_interp(l_sample)
         Il = El*El.conj()
 #        Il = Il/max(Il)
@@ -124,11 +129,13 @@ class SimulatedPulse(object):
         self.Et = Et
         
     def getShiftedEt(self, shift):
+        sh = np.int(shift)
         Ets = np.zeros_like(self.Et)
-        if shift < 0:
-            Ets[0:self.N+shift] = self.Et[-shift:]
+        # root.debug(''.join(('Shift: ', str(sh))))
+        if sh < 0:
+            Ets[0:self.N+sh] = self.Et[-sh:]
         else:
-            Ets[shift:] = self.Et[0:self.N-shift]
+            Ets[sh:] = self.Et[0:self.N-sh]
         return Ets
 
 
@@ -183,7 +190,7 @@ class SimulatedFrogTrace(object):
         nl_shift = np.int(l_shift/np.abs(l[1]-l[0]))
         self.l_vec = l + l_shift
         
-        shiftVec = np.arange(N) - N/2
+        shiftVec = (np.arange(N) - N/2).astype(np.int)
         
         root.debug(''.join(('l_shift: ', str(l_shift))))
         root.debug(''.join(('nl_shift: ', str(nl_shift))))

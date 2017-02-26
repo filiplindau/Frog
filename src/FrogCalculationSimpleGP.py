@@ -12,9 +12,10 @@ from scipy.optimize import fmin as fmin
 import scipy.interpolate as si
 import sys
 import time
+from importlib import reload
 import FrogSimulatePulseNC as sp
-
 reload(sp)
+
 import logging
 import logging.handlers
 
@@ -294,7 +295,7 @@ class FrogCalculation(object):
         Et_mat = np.tile(Et, (n_t, 1))  # Repeat Et into a matrix
 
         Et_mat_tau = np.zeros_like(Et_mat)
-        shiftVec = np.arange(n_t) - n_t / 2
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shiftVec):
             if sh < 0:
                 Et_mat_tau[ind, 0:n_t + sh] = Et[-sh:]
@@ -331,7 +332,7 @@ class FrogCalculation(object):
         Et_mat_tau = np.zeros_like(Et_mat)
         n_t = self.Et.shape[0]
 
-        shiftVec = np.arange(n_t) - n_t / 2
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
 
         for ind, sh in enumerate(shiftVec):
 
@@ -390,7 +391,7 @@ class FrogCalculation(object):
         Et_mat_tau = np.zeros_like(Et_mat)
         n_t = self.Et.shape[0]
 
-        shiftVec = np.arange(n_t) - n_t / 2
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
 
         for ind, sh in enumerate(shiftVec):
             if sh < 0:
@@ -462,6 +463,9 @@ class FrogCalculation(object):
         t0 = time.clock()
 
         self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
+        eps = 1e-3
+        bad_ind = np.abs(self.Esig_t_tau_p) < eps
+        self.Esig_t_tau_p[bad_ind] = 0.0 + 0.0j
         # self.Esig_t_tau_p = self.Esig_t_tau_p / np.abs(self.Esig_t_tau_p).max()
         # Emin, Zmin = fmin(self.functional_distance, self.Et)
 
@@ -487,7 +491,7 @@ class FrogCalculation(object):
 
         Et_mat = np.tile(Et, (n_t, 1))  # Repeat Et into a matrix
         Et_mat_tau = np.zeros_like(Et_mat)
-        shiftVec = np.arange(n_t) - n_t / 2
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shiftVec):
             if sh < 0:
                 Et_mat_tau[ind, 0:n_t + sh] = Et[-sh:]  # Here should be a factor exp(-1j*w0*tau)
@@ -517,7 +521,7 @@ class FrogCalculation(object):
 
         Ea_mat = np.tile(Ea, (n_t, 1))  # Repeat Et into a matrix
         Ea_mat_tau = np.zeros_like(Ea_mat)
-        shiftVec = np.arange(n_t) - n_t / 2
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shiftVec):
             if sh < 0:
                 Ea_mat_tau[ind, 0:n_t + sh] = Ea[-sh:]  # Here should be a factor exp(-1j*w0*tau)
@@ -578,7 +582,7 @@ class FrogCalculation(object):
         Et_tau_n = np.zeros_like(Et_mat)    # E(t-tau)
         Esig_p = np.zeros_like(Et_mat)      # Esig(t+tau, tau)
 
-        shift_vec = np.arange(n_t) - n_t / 2
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shift_vec):
             if sh < 0:
                 Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
@@ -635,7 +639,7 @@ class FrogCalculation(object):
         Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
         Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
 
-        shift_vec = np.arange(n_t) - n_t / 2
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shift_vec):
             if sh < 0:
                 Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
@@ -651,7 +655,7 @@ class FrogCalculation(object):
 
         dZ = -(2*dZ_tmp).sum(0)
         self.dZ = dZ
-        self.dZ /= np.abs(self.dZ).max()
+        # self.dZ /= np.abs(self.dZ).max()
         return dZ
 
     def grad_z_sd2(self):
@@ -665,7 +669,7 @@ class FrogCalculation(object):
         Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
         Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
 
-        shift_vec = np.arange(n_t) - n_t / 2
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shift_vec):
             if sh < 0:
                 Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
@@ -739,7 +743,7 @@ class FrogCalculation(object):
 
     def center_peaktime(self):
         ind = np.argmax(abs(self.Et))
-        shift = self.Et.shape[0] / 2 - ind
+        shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
         self.Et = np.roll(self.Et, shift)
 
     def calc_reconstruction_error(self):
@@ -758,7 +762,7 @@ class FrogCalculation(object):
     def get_trace_abs(self, norm=True):
         # Center peak in time
         ind = np.argmax(abs(self.Et))
-        shift = self.Et.shape[0] / 2 - ind
+        shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
         Et = np.abs(np.roll(self.Et, shift))
         if norm is True:
             Et /= Et.max()
@@ -772,7 +776,7 @@ class FrogCalculation(object):
         shift = self.Et.shape[0] / 2 - ind
         Et = np.roll(self.Et, shift)
 
-        ph0_ind = Et.shape[0] / 2
+        ph0_ind = np.int(Et.shape[0] / 2)
         ph = np.angle(Et)
         ph_diff = np.diff(ph)
         ph_ind = np.where(np.abs(ph_diff) > 5.0)
@@ -822,7 +826,7 @@ class FrogCalculation(object):
         deltaT = time.clock() - t0
         root.debug(''.join(('Total runtime ', str(deltaT))))
         root.debug(''.join((str(cycles / deltaT), ' iterations/s')))
-        print ''.join((str(cycles / deltaT), ' iterations/s'))
+        print(''.join((str(cycles / deltaT), ' iterations/s')))
         return np.array(error)
 
     def setup_gp_algorithm(self):
@@ -853,7 +857,7 @@ class FrogCalculation(object):
         deltaT = time.clock() - t0
         root.debug(''.join(('Total runtime ', str(deltaT))))
         root.debug(''.join((str(cycles / deltaT), ' iterations/s')))
-        print ''.join((str(cycles / deltaT), ' iterations/s'))
+        print(''.join((str(cycles / deltaT), ' iterations/s')))
         return np.array(error)
 
 
@@ -878,14 +882,14 @@ if __name__ == '__main__':
 
     frog = FrogCalculation()
 
-    frog.init_pulsefield_random(N, dt, l0/2)
+    frog.init_pulsefield_random(N, dt, l0)
 
-    frog.condition_frog_trace(IfrogSD[::-1, :], l[0], l[-1], t[0], t[-1], thr=0)
-    # frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, 'SD')
+    # frog.condition_frog_trace(IfrogSD[::-1, :], l[0], l[-1], t[0], t[-1], thr=0)
+    frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, 'SD')
     # frog.init_pulsefield_perfect(N, dt, l0, tau_pulse)
     # frog.I_w_tau = np.abs(frog.Esig_w_tau)**2
     # frog.load_frog_trace('./frogtrace_2016-03-31_11h29_image.png', thr=0.25, lStartPixel=50, lStopPixel=665,
     #                      tStartPixel=18, tStopPixel=65)
     er = np.array([])
     # er = frog.run_cycle_vanilla(5, 'SHG', roll_fft=False)
-    er = np.hstack((er, frog.run_cycle_gp(20, 'SD', roll_fft=False)))
+    er = np.hstack((er, frog.run_cycle_gp(1, 'SD', roll_fft=False)))
