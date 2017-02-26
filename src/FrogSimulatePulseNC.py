@@ -66,13 +66,13 @@ class SimulatedPulse(object):
         Eenv = np.exp(-t**2/self.tau**2 + 1j*(b*t**2) + ph)
         self.setEt(Eenv, t)
 
-    def generateGaussianCubicPhase(self, b = 0, c = 0):
+    def generateGaussianCubicPhase(self, b=0, c=0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)
         ph = 0.0
         Eenv = np.exp(-t**2/self.tau**2 + 1j*(b*t**2 + c*t**3) + ph)
         self.setEt(Eenv, t)
 
-    def generateGaussianCubicSpectralPhase(self, b = 0, c = 0):
+    def generateGaussianCubicSpectralPhase(self, b=0, c=0):
         t = np.linspace(-self.tspan/2, self.tspan/2, self.N)        
         f_max = 1/(2*self.dt)
         w_span = f_max*2*2*np.pi

@@ -255,7 +255,67 @@ class FrogCalculation(object):
 
         return Idata_i, w_data, tau_data
 
-    def create_frog_trace_gaussian(self, n_t, t_res, l_center, tau_pulse, algo='SHG'):
+    def condition_frog_trace2(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15):
+        """ Take the measured intensity data and interpolate it to the
+        internal w, tau grid. The variables self.w and self.tau must be set up
+        first (be e.g. calling one of the init_pulsefield functions).
+
+        Idata.shape[0] = number of tau points
+        Idata.shape[1] = number of spectrum points
+        """
+        # Setup trace frequency and time parameters
+        tau_data = np.linspace(tau_start, tau_stop, Idata.shape[0])
+        l_data = np.linspace(l_start, l_stop, Idata.shape[1])
+        l_center = (l_start + l_stop)/2
+        c = 299792458.0
+        w0 = 2*np.pi*c/l_center
+        if l_start > l_stop:
+            w_data = 2 * np.pi * c / l_data[:].copy()
+            Idata_i = Idata.copy()
+
+        else:
+            w_data = 2 * np.pi * c / l_data[::-1].copy()
+            Idata_i = np.fliplr(Idata).copy()
+
+        # Idata_i = Idata.copy()
+        Idata_i[0:2, :] = 0.0
+        Idata_i[-2:, :] = 0.0
+        Idata_i[:, 0:2] = 0.0
+        Idata_i[:, -2:] = 0.0
+        Idata_i = self.filter_frog_trace(Idata_i / Idata_i.max(), 3, thr)
+
+        # Find center wavelength
+        # Idata_l = Idata_i.sum(0)
+        # l_center = np.trapz(l_data * Idata_l) / np.trapz(Idata_l)
+        # Find time resolution
+        t_res = (tau_stop - tau_start) / n_frog
+        # Generate a suitable time-frequency grid and start pulse
+        self.init_pulsefield_random(n_frog, t_res, l_center)
+
+        root.info('Creating interpolator')
+        t0 = time.clock()
+        # Create a 2D bivariate spline interpolator for input image:
+        Idata_interp = si.RectBivariateSpline(tau_data, w_data, Idata_i)
+        root.info(''.join(('Time spent: ', str(time.clock() - t0))))
+
+        root.info(''.join(('Interpolating frog trace to ', str(self.tau.shape[0]), 'x', str(self.w.shape[0]))))
+        t0 = time.clock()
+        # Interpolate the values for the points in the reconstruction matrix
+        # We shift the frequencies by the central frequency to make sure images are aligned.
+        # Then fftshift is needed due to the way fft sorts its frequency vector (first positive frequencies
+        # then the negative frequencies in the end)
+        I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w+self.w0), 0.0), axes=1).astype(self.dtype_r)
+        # I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1).astype(self.dtype_r)
+        self.I_w_tau = self.filter_frog_trace(I_w_tau_interp, 3, thr)
+
+        if self.roll_fft is True:
+            self.I_w_tau = np.roll(self.I_w_tau, 1, axis=0)
+
+        root.info(''.join(('Time spent: ', str(time.clock() - t0))))
+
+        return Idata_i, w_data, tau_data
+
+    def create_frog_trace_gaussian(self, n_t, t_res, l_center, tau_pulse, b=0, c=0, algo='SHG'):
         """ Initiate signal field with parameters:
         t_res: time resolution of the reconstruction
         n_t: number of points in time and wavelength axes
@@ -279,8 +339,8 @@ class FrogCalculation(object):
         f_max = 1 / (2 * t_res)
         w_span = f_max * 2 * 2 * np.pi
 
-        c = 299792458.0
-        w0 = 2 * np.pi * c / l_center
+        c_v = 299792458.0
+        w0 = 2 * np.pi * c_v / l_center
         #        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
         w_spectrum = np.linspace(-w_span / 2, -w_span / 2 + w_res * n_t, n_t)
         self.dw = w_res
@@ -291,7 +351,71 @@ class FrogCalculation(object):
         self.dt = t_res
         self.t = np.linspace(-t_span / 2, t_span / 2, n_t)
 
-        Et = np.exp(-(self.t/tau_pulse)**2).astype(self.dtype_c)
+        # Et = np.exp(-(self.t/tau_pulse)**2).astype(self.dtype_c)
+        Et = np.exp(-self.t**2 / tau_pulse**2 + 1j * (b * self.t**2 + c * self.t**3))
+        Et_mat = np.tile(Et, (n_t, 1))  # Repeat Et into a matrix
+
+        Et_mat_tau = np.zeros_like(Et_mat)
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shiftVec):
+            if sh < 0:
+                Et_mat_tau[ind, 0:n_t + sh] = Et[-sh:]
+            else:
+                Et_mat_tau[ind, sh:] = Et[0:n_t - sh]
+
+        # Create signal trace in time:
+        if algo == 'SHG':
+            Esig_t_tau = Et_mat * Et_mat_tau
+        elif algo == 'SD':
+            Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
+
+        # Convert to frequency - tau space
+        Esig_w_tau = np.fft.fft(Esig_t_tau, axis=1).astype(self.dtype_c)
+        # Store the intensity matrix as the frog trace
+        self.I_w_tau = np.abs(Esig_w_tau)**2
+
+    def create_frog_trace_gaussian_spectral(self, n_t, t_res, l_center, tau_pulse, b=0, c=0, algo='SHG'):
+        """ Initiate signal field with parameters:
+        t_res: time resolution of the reconstruction
+        n_t: number of points in time and wavelength axes
+        l_center: center wavelength
+
+        Creates the following variables:
+        self.w
+        self.dw
+        self.t
+        self.dt
+        self.tau
+        self.Et
+        """
+        t_span = n_t * t_res
+
+        # Now we calculate the frequency resolution required by the
+        # time span
+        w_res = 2 * np.pi / t_span
+
+        # Frequency span is given by the time resolution
+        f_max = 1 / (2 * t_res)
+        w_span = f_max * 2 * 2 * np.pi
+
+        c_v = 299792458.0
+        w0 = 2 * np.pi * c_v / l_center
+        #        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
+        w_spectrum = np.linspace(-w_span / 2, -w_span / 2 + w_res * n_t, n_t)
+        self.dw = w_res
+        self.w = w_spectrum
+        self.w0 = w0
+
+        # Create time vector
+        self.dt = t_res
+        self.t = np.linspace(-t_span / 2, t_span / 2, n_t)
+
+        # Et = np.exp(-(self.t/tau_pulse)**2).astype(self.dtype_c)
+        dw = 2 * np.pi * 0.441 / tau_pulse
+        ph = 0.0
+        Eenv_w = np.exp(-self.w**2 / dw**2 + 1j * (b * self.w**2 + c * self.w**3) + ph)
+        Et = np.fft.fftshift(np.fft.ifft(np.fft.fftshift(Eenv_w)))
+
         Et_mat = np.tile(Et, (n_t, 1))  # Repeat Et into a matrix
 
         Et_mat_tau = np.zeros_like(Et_mat)
@@ -868,9 +992,9 @@ if __name__ == '__main__':
     tau_pulse = 100e-15
 
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
-    # p.generateGaussianCubicSpectralPhase(2e-27, 0e-40)
+    p.generateGaussianCubicSpectralPhase(2e-27, 1e-40)
     # p.generateGaussianCubicPhase(5e24, 3e39)
-    p.generateGaussian(tau_pulse)
+    # p.generateGaussian(tau_pulse)
     # p.generateDoublePulse(tau_pulse, deltaT=0.5e-12)
     gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
@@ -885,7 +1009,9 @@ if __name__ == '__main__':
     frog.init_pulsefield_random(N, dt, l0)
 
     # frog.condition_frog_trace(IfrogSD[::-1, :], l[0], l[-1], t[0], t[-1], thr=0)
-    frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, 'SD')
+    frog.condition_frog_trace2(IfrogSD, l[0], l[-1], t[0], t[-1], thr=0)
+    # frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, algo='SD')
+    # frog.create_frog_trace_gaussian_spectral(N, dt, l0, tau_pulse, b=2e-27, c=1e-40, algo='SD')
     # frog.init_pulsefield_perfect(N, dt, l0, tau_pulse)
     # frog.I_w_tau = np.abs(frog.Esig_w_tau)**2
     # frog.load_frog_trace('./frogtrace_2016-03-31_11h29_image.png', thr=0.25, lStartPixel=50, lStopPixel=665,
