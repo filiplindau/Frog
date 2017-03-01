@@ -192,6 +192,25 @@ class FrogCalculation(object):
                                   l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
                                   t_data[t_stop_pixel], thr)
 
+    def load_frog_trace2(self, filename, thr=0.0, l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1):
+        f_name_root = '_'.join((filename.split('_')[0:3]))
+        t_data = np.loadtxt(''.join((f_name_root, '_timevector.txt')))
+        t_data = t_data - t_data.mean()
+        l_data = np.loadtxt(''.join((f_name_root, '_wavelengthvector.txt'))) * 1e-9
+        pic = np.float32(imread(''.join((f_name_root, '_image.png'))))
+        pic_n = pic / pic.max()
+
+        if t_stop_pixel == -1:
+            t_stop_pixel = pic_n.shape[0] - 1
+        if l_stop_pixel == -1:
+            l_stop_pixel = pic_n.shape[1] - 1
+
+        picF = self.filter_frog_trace(pic_n, 3, thr)
+
+        self.condition_frog_trace2(picF[t_start_pixel:t_stop_pixel, l_start_pixel:l_stop_pixel],
+                                  l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
+                                  t_data[t_stop_pixel], self.Et.shape[0], thr)
+
     def condition_frog_trace(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15):
         """ Take the measured intensity data and interpolate it to the
         internal w, tau grid. The variables self.w and self.tau must be set up
@@ -274,20 +293,9 @@ class FrogCalculation(object):
         l_center = (l_start + l_stop)/2
         c = 299792458.0
         w0 = 2*np.pi*c/l_center
-        # if l_start > l_stop:
-        #     w_data = 2 * np.pi * c / l_data[:].copy()
-        #     Idata_i = Idata.copy()
-        #
-        # else:
-        #     w_data = 2 * np.pi * c / l_data[::-1].copy()
-        #     Idata_i = np.fliplr(Idata).copy()
 
         w_data = 2 * np.pi * c / l_data[:].copy()
         Idata_i = Idata.copy()
-        # Idata_i[0:2, :] = 0.0
-        # Idata_i[-2:, :] = 0.0
-        # Idata_i[:, 0:2] = 0.0
-        # Idata_i[:, -2:] = 0.0
         Idata_i = self.filter_frog_trace(Idata_i / Idata_i.max(), 3, thr)
 
         # Find center wavelength
@@ -628,9 +636,16 @@ class FrogCalculation(object):
         if algo == 'SHG' or algo == 'PG':
             self.Et = self.Esig_t_tau_p.sum(axis=0)
         elif algo == 'SD':
-            self.Et = np.conj(self.Esig_t_tau_p).sum(axis=1)[::-1]
-            # Etmp = np.sqrt(self.Esig_t_tau_p.sum(axis=0))
-            # self.Et = (self.Esig_t_tau_p/Etmp).sum(axis=0)
+            # Change variables so that we have Esig(t+tau, tau) and integrate in tau direction
+            Esig = self.Esig_t_tau_p
+            Esig_p = np.zeros_like(Esig)  # Esig(t+tau, tau)
+            shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+            for ind, sh in enumerate(shift_vec):
+                if sh < 0:
+                    Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+                else:
+                    Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+            self.Et = np.conj(Esig_p.sum(axis=0))
         else:
             raise ValueError("Unknown algorithm")
         # self.Et = self.Et / np.abs(self.Et).max()
@@ -1382,14 +1397,18 @@ if __name__ == '__main__':
     frog.init_pulsefield_random(N, dt, l0)
 
     # frog.condition_frog_trace2(IfrogSHG, l[0], l[-1], t[0], t[-1], thr=0)
-    frog.condition_frog_trace2(IfrogSD, l[0], l[-1], t[0], t[-1], thr=0)
+    # frog.condition_frog_trace2(IfrogSD, l[0], l[-1], t[0], t[-1], thr=0)
     # frog.condition_frog_trace2(IfrogPG, l[0], l[-1], t[0], t[-1], thr=0)
     # frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, algo='SD')
     # frog.create_frog_trace_gaussian_spectral(N, dt, l0, tau_pulse, b=1e-27, c=0.5e-40, algo='PG')
     # frog.init_pulsefield_perfect(N, dt, l0, tau_pulse)
     # frog.I_w_tau = np.abs(frog.Esig_w_tau)**2
-    # frog.load_frog_trace('./frogtrace_2016-03-31_11h29_image.png', thr=0.25, lStartPixel=50, lStopPixel=665,
-    #                      tStartPixel=18, tStopPixel=65)
+    N = 128
+    dt = 6e-15
+    l0 = 263.5e-9
+    frog.init_pulsefield_random(N, dt, l0)
+    frog.load_frog_trace2('./frogtrace_2017-02-16_14h44_image.png', thr=0.25, l_start_pixel=0, l_stop_pixel=-1,
+                         t_start_pixel=0, t_stop_pixel=-1)
     er = np.array([])
     er = frog.run_cycle_vanilla(20, 'SD', roll_fft=True)
     # er = np.hstack((er, frog.run_cycle_gp(1, 'SHG', roll_fft=False)))
