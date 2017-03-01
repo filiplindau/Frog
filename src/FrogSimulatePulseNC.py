@@ -198,7 +198,6 @@ class SimulatedFrogTrace(object):
         Esig_t_tau = []
         for sh in shiftVec:
             Ils = np.zeros_like(Il)
-#             signalPulse.setEt(Et*Et*np.conj(self.pulse.getShiftedEt(sh)), t)
             signalPulse.setEt(Et*Et*np.conj(self.pulse.getShiftedEt(sh)), t)
             l, Iln = signalPulse.getSpectrogram(t.shape[0])
             Ils = np.roll(Iln, nl_shift)
@@ -213,33 +212,36 @@ class SimulatedFrogTrace(object):
     
     def generatePGTraceDt(self, N, dt, l0):
         signalPulse = SimulatedPulse(self.pulse.N, self.pulse.dt, self.pulse.l0, self.pulse.tau)
-        tspan = N*dt
-        self.tau_vec = np.linspace(-tspan/2.0, tspan/2.0, N)
+        tspan = N * dt
+        self.tau_vec = np.linspace(-tspan / 2.0, tspan / 2.0, N)
         t = self.pulse.t
         Et = self.pulse.Et
         Ifrog = []
-        
-        signalPulse.setEt(Et*np.abs(Et)**2, t)
+
+        signalPulse.setEt(Et * Et * np.conj(Et), t)
         l, Il = signalPulse.getSpectrogram(t.shape[0])
         l_shift = signalPulse.l0 - l0
-        nl_shift = np.int(l_shift/np.abs(l[1]-l[0]))
+        nl_shift = np.int(l_shift / np.abs(l[1] - l[0]))
         self.l_vec = l + l_shift
-        
-        shiftVec = np.arange(N) - N/2
-        
+
+        shiftVec = (np.arange(N) - N / 2).astype(np.int)
+
         root.debug(''.join(('l_shift: ', str(l_shift))))
         root.debug(''.join(('nl_shift: ', str(nl_shift))))
-        
+
+        Esig_t_tau = []
         for sh in shiftVec:
             Ils = np.zeros_like(Il)
             signalPulse.setEt(Et*np.abs(self.pulse.getShiftedEt(sh))**2, t)
             l, Iln = signalPulse.getSpectrogram(t.shape[0])
             Ils = np.roll(Iln, nl_shift)
             Ifrog.append(Ils)
-            
+            Esig_t_tau.append(signalPulse.Et)
+
         Ifrog = np.array(Ifrog).real
-        self.Ifrog = Ifrog/Ifrog.max()
-        
+        self.Ifrog = Ifrog / Ifrog.max()
+        self.Esig_t_tau = np.array(Esig_t_tau)
+
         return self.Ifrog
         
     def addNoise(self, shotAmp=0.1, readAmp=0.05):

@@ -7,13 +7,16 @@ Created on 17 Feb 2017
 import numpy as np
 from scipy.misc import imread
 from scipy.signal import medfilt2d
-from scipy.interpolate import interp2d
+from scipy.interpolate import interp1d
 from scipy.optimize import fmin as fmin
+from scipy.optimize import fmin_cg, fmin_bfgs
 import scipy.interpolate as si
 import sys
 import time
-from importlib import reload
 import FrogSimulatePulseNC as sp
+if sys.version_info > (3, 0):
+    from importlib import reload
+
 reload(sp)
 
 import logging
@@ -58,8 +61,9 @@ class FrogCalculation(object):
         self.Esig_t_tau_p = None    # FROG signal electric field vs time and time shift after intensity projection
         self.dZ = None
         self.alpha = []
+        self.G_hist = []
 
-    def init_pulsefield_random(self, n_t, t_res, l_center, seed=0):
+    def init_pulsefield_random(self, n_t, t_res, l_center, tau_pulse=100e-15, seed=0):
         """ Initiate signal field with parameters:
         t_res: time resolution of the reconstruction
         n_t: number of points in time and wavelength axes
@@ -101,7 +105,8 @@ class FrogCalculation(object):
         root.info(''.join(('t_span ', str(t_span))))
         root.info(''.join(('t_res ', str(t_res))))
 
-        self.Et = np.random.rand(n_t) * np.exp(0.0j * 2 * np.pi * np.random.rand(n_t)).astype(self.dtype_c)
+        # self.Et = np.exp(-self.t ** 2 / tau_pulse ** 2 + 1j * 2 * np.pi * np.random.rand(n_t)).astype(self.dtype_c)
+        self.Et = np.random.rand(n_t) * np.exp(1j * 2 * np.pi * np.random.rand(n_t)).astype(self.dtype_c)
 
         self.init_shiftind(n_t)
 
@@ -269,19 +274,20 @@ class FrogCalculation(object):
         l_center = (l_start + l_stop)/2
         c = 299792458.0
         w0 = 2*np.pi*c/l_center
-        if l_start > l_stop:
-            w_data = 2 * np.pi * c / l_data[:].copy()
-            Idata_i = Idata.copy()
+        # if l_start > l_stop:
+        #     w_data = 2 * np.pi * c / l_data[:].copy()
+        #     Idata_i = Idata.copy()
+        #
+        # else:
+        #     w_data = 2 * np.pi * c / l_data[::-1].copy()
+        #     Idata_i = np.fliplr(Idata).copy()
 
-        else:
-            w_data = 2 * np.pi * c / l_data[::-1].copy()
-            Idata_i = np.fliplr(Idata).copy()
-
-        # Idata_i = Idata.copy()
-        Idata_i[0:2, :] = 0.0
-        Idata_i[-2:, :] = 0.0
-        Idata_i[:, 0:2] = 0.0
-        Idata_i[:, -2:] = 0.0
+        w_data = 2 * np.pi * c / l_data[:].copy()
+        Idata_i = Idata.copy()
+        # Idata_i[0:2, :] = 0.0
+        # Idata_i[-2:, :] = 0.0
+        # Idata_i[:, 0:2] = 0.0
+        # Idata_i[:, -2:] = 0.0
         Idata_i = self.filter_frog_trace(Idata_i / Idata_i.max(), 3, thr)
 
         # Find center wavelength
@@ -292,21 +298,25 @@ class FrogCalculation(object):
         # Generate a suitable time-frequency grid and start pulse
         self.init_pulsefield_random(n_frog, t_res, l_center)
 
-        root.info('Creating interpolator')
-        t0 = time.clock()
-        # Create a 2D bivariate spline interpolator for input image:
-        Idata_interp = si.RectBivariateSpline(tau_data, w_data, Idata_i)
-        root.info(''.join(('Time spent: ', str(time.clock() - t0))))
-
         root.info(''.join(('Interpolating frog trace to ', str(self.tau.shape[0]), 'x', str(self.w.shape[0]))))
-        t0 = time.clock()
         # Interpolate the values for the points in the reconstruction matrix
         # We shift the frequencies by the central frequency to make sure images are aligned.
         # Then fftshift is needed due to the way fft sorts its frequency vector (first positive frequencies
         # then the negative frequencies in the end)
-        I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w+self.w0), 0.0), axes=1).astype(self.dtype_r)
-        # I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1).astype(self.dtype_r)
-        self.I_w_tau = self.filter_frog_trace(I_w_tau_interp, 3, thr)
+        t0 = time.clock()
+        Itmp_w = np.zeros((Idata_i.shape[0], n_frog))
+        I_w_tau = np.zeros((n_frog, n_frog))
+        # First do interpolation in w direction for each tau delay:
+        for ind in range(Idata_i.shape[0]):
+            Idata_interp = interp1d(w_data, Idata_i[ind, :], kind='linear', fill_value=0.0, bounds_error=False)
+            Itmp_w[ind, :] = Idata_interp(self.w0 + self.w)
+        # Then interpolate in tau direction using the newly constructed intensity matrix
+        for ind in range(n_frog):
+            Idata_interp = interp1d(tau_data, Itmp_w[:, ind], kind='linear', fill_value=0.0, bounds_error=False)
+            I_w_tau[:, ind] = Idata_interp(self.tau)
+        I_w_tau = np.fft.fftshift(np.maximum(I_w_tau, 0.0), axes=1).astype(self.dtype_r)
+        self.I_w_tau = self.filter_frog_trace(I_w_tau, 3, thr)
+        self.I_w_tau = self.I_w_tau / self.I_w_tau.max()
 
         if self.roll_fft is True:
             self.I_w_tau = np.roll(self.I_w_tau, 1, axis=0)
@@ -368,6 +378,8 @@ class FrogCalculation(object):
             Esig_t_tau = Et_mat * Et_mat_tau
         elif algo == 'SD':
             Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
+        elif algo == 'PG':
+            Esig_t_tau = Et_mat * Et_mat_tau * np.conj(Et_mat_tau)
 
         # Convert to frequency - tau space
         Esig_w_tau = np.fft.fft(Esig_t_tau, axis=1).astype(self.dtype_c)
@@ -415,7 +427,7 @@ class FrogCalculation(object):
         ph = 0.0
         Eenv_w = np.exp(-self.w**2 / dw**2 + 1j * (b * self.w**2 + c * self.w**3) + ph)
         Et = np.fft.fftshift(np.fft.ifft(np.fft.fftshift(Eenv_w)))
-
+        Et = Et / np.abs(Et).max()
         Et_mat = np.tile(Et, (n_t, 1))  # Repeat Et into a matrix
 
         Et_mat_tau = np.zeros_like(Et_mat)
@@ -431,6 +443,8 @@ class FrogCalculation(object):
             Esig_t_tau = Et_mat * Et_mat_tau
         elif algo == 'SD':
             Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
+        elif algo == 'PG':
+            Esig_t_tau = Et_mat * Et_mat_tau * np.conj(Et_mat_tau)
 
         # Convert to frequency - tau space
         Esig_w_tau = np.fft.fft(Esig_t_tau, axis=1).astype(self.dtype_c)
@@ -519,11 +533,45 @@ class FrogCalculation(object):
 
         for ind, sh in enumerate(shiftVec):
             if sh < 0:
-                Et_mat_tau[ind, 0:n_t + sh] = self.Et[-sh:]  # Here should be a factor exp(-1j*w0*tau)
+                Et_mat_tau[ind, 0:n_t + sh] = self.Et[-sh:]
             else:
-                Et_mat_tau[ind, sh:] = self.Et[0:n_t - sh]  # Here should be a factor exp(-1j*w0*tau)
+                Et_mat_tau[ind, sh:] = self.Et[0:n_t - sh]
 
         self.Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
+        self.Et_mat = Et_mat
+        self.Et_mat_tau = Et_mat_tau
+        root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
+
+    def generate_Esig_t_tau(self, algo='SHG'):
+        """ Generate the time shifted E-field matrix for the SD process.
+
+        Output:
+        self.Esig_t_tau, a n_t x n_tau matrix where each row is Esig(t,tau)
+        """
+        root.debug('Generating new Esig_t_tau from SD')
+        t0 = time.clock()
+
+        Et_mat = np.tile(self.Et, (self.tau.shape[0], 1))  # Repeat Et into a matrix
+        Et_mat_tau = np.zeros_like(Et_mat)
+        n_t = self.Et.shape[0]
+
+        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
+
+        for ind, sh in enumerate(shiftVec):
+            if sh < 0:
+                Et_mat_tau[ind, 0:n_t + sh] = self.Et[-sh:]
+            else:
+                Et_mat_tau[ind, sh:] = self.Et[0:n_t - sh]
+
+        if algo == 'SHG':
+            self.Esig_t_tau = Et_mat * Et_mat_tau
+        elif algo == 'SD':
+            self.Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
+        elif algo == 'PG':
+            self.Esig_t_tau = Et_mat * np.abs(Et_mat_tau)**2
+        else:
+            raise ValueError("Unknown algorithm, should be SHG, SD, or PG")
+
         self.Et_mat = Et_mat
         self.Et_mat_tau = Et_mat_tau
         root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
@@ -536,6 +584,7 @@ class FrogCalculation(object):
         """
         root.debug('Generating new Esig_w_tau with fft')
         t0 = time.clock()
+        n_t = self.Et.shape[0]
         if self.roll_fft is True:
             self.Esig_w_tau = np.roll(np.fft.fft(self.Esig_t_tau, axis=1).astype(self.dtype_c), 1, axis=0)
         else:
@@ -555,7 +604,7 @@ class FrogCalculation(object):
         t0 = time.clock()
         if I_w_tau is None:
             I_w_tau = self.I_w_tau
-        eps = 0.0001
+        eps = 0.000
         Esig_mag = np.abs(self.Esig_w_tau)
         self.Esig_w_tau_p = np.zeros_like(self.Esig_w_tau)
         # Ignore data below threshold eps:
@@ -574,40 +623,45 @@ class FrogCalculation(object):
         """
         root.debug('Updating Et using vanilla algorithm')
         t0 = time.clock()
+        n_t = self.Et.shape[0]
         self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1).astype(self.dtype_c)
-        if algo == 'SHG':
+        if algo == 'SHG' or algo == 'PG':
             self.Et = self.Esig_t_tau_p.sum(axis=0)
         elif algo == 'SD':
-            self.Et = np.sqrt(self.Esig_t_tau_p.sum(axis=0))
+            self.Et = np.conj(self.Esig_t_tau_p).sum(axis=1)[::-1]
+            # Etmp = np.sqrt(self.Esig_t_tau_p.sum(axis=0))
+            # self.Et = (self.Esig_t_tau_p/Etmp).sum(axis=0)
+        else:
+            raise ValueError("Unknown algorithm")
         # self.Et = self.Et / np.abs(self.Et).max()
         root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
 
     def update_Et_gp(self, algo='SHG'):
         root.debug('Updating Et using GP algorithm')
         t0 = time.clock()
-
+        n_t = self.Et.shape[0]
         self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
-        eps = 1e-3
+        eps = 0.0
         bad_ind = np.abs(self.Esig_t_tau_p) < eps
         self.Esig_t_tau_p[bad_ind] = 0.0 + 0.0j
-        # self.Esig_t_tau_p = self.Esig_t_tau_p / np.abs(self.Esig_t_tau_p).max()
-        # Emin, Zmin = fmin(self.functional_distance, self.Et)
 
-        # self.grad_z_shg_naive()
         if algo == 'SHG':
-            self.grad_z_shg2()
-            # alpha = self.min_z_shg_naive()
-            alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
+            self.grad_z_shg()
+            alpha = self.min_z_shg()
+            # alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
         elif algo == 'SD':
             self.grad_z_sd()
-            alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
+            alpha = self.min_z_sd()
+        elif algo == 'PG':
+            self.grad_z_pg()
+            alpha = self.min_z_pg()
+            # alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
         else:
             raise ValueError(''.join(('Algorithm ', str(algo), ' not valid.')))
 
         root.debug(''.join(('Minimum found: ', str(alpha))))
         self.alpha.append(alpha)
         self.Et += alpha * self.dZ
-        # self.Et = self.Et / np.abs(self.Et).max()
         root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
 
     def functional_distance(self, Et, algo='SHG'):
@@ -626,6 +680,8 @@ class FrogCalculation(object):
             Esig_t_tau_new = Et_mat * Et_mat_tau
         elif algo == 'SD':
             Esig_t_tau_new = Et_mat**2 * np.conj(Et_mat_tau)
+        elif algo == 'PG':
+            Esig_t_tau_new = Et_mat * Et_mat_tau * np.conj(Et_mat_tau)
         else:
             raise ValueError(''.join(('Algorithm ', str(algo), ' not valid.')))
 
@@ -656,6 +712,8 @@ class FrogCalculation(object):
             Esig_t_tau_new = Ea_mat * Ea_mat_tau
         elif algo == 'SD':
             Esig_t_tau_new = Ea_mat**2 * np.conj(Ea_mat_tau)
+        elif algo == 'PG':
+            Esig_t_tau_new = Ea_mat * Ea_mat_tau * np.conj(Ea_mat_tau)
         else:
             raise ValueError(''.join(('Algorithm ', str(algo), ' not valid.')))
         z0 = self.Esig_t_tau_p - Esig_t_tau_new
@@ -663,7 +721,7 @@ class FrogCalculation(object):
         Z = np.real((z0 * np.conj(z0)).sum())
         return Z
 
-    def grad_z_shg(self):
+    def grad_z_shg2(self):
         """ Calculate the gradient of the Z function (functional distance) for the SHG algorithm.
         """
         tic = time.clock()
@@ -692,7 +750,7 @@ class FrogCalculation(object):
         root.debug(''.join(('Grad_Z_SHG time spent: ', str(toc - tic))))
         return dZ_r, dZ_i
 
-    def grad_z_shg2(self):
+    def grad_z_shg(self):
         """ Calculate the gradient of the Z function (functional distance) for the SHG algorithm.
         """
         tic = time.clock()
@@ -727,7 +785,7 @@ class FrogCalculation(object):
 
         dZ = (2*np.conj(dZ_tmp)).sum(0)
         self.dZ = dZ
-        self.dZ /= np.abs(self.dZ).max()
+        self.dZ /= n_t**2
 
         toc = time.clock()
         root.debug(''.join(('Grad_Z_SHGv2  time spent: ', str(toc - tic))))
@@ -758,32 +816,157 @@ class FrogCalculation(object):
         n_t = self.Et.shape[0]
         Et = self.Et
         Esig = self.Esig_t_tau_p
+        Ek = np.tile(Et, (n_t, 1))  # Copy Et for each tau value
+        Ep = np.zeros_like(Ek)  # E(t+tau)
+        En = np.zeros_like(Ek)  # E(t-tau)
+        Esig_p = np.zeros_like(Ek)  # Esig(t+tau, tau)
+
+        # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        # for ind, sh in enumerate(shift_vec):
+        #     if sh < 0:
+        #         Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+        #         Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+        #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+        #     else:
+        #         Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+        #         Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
+        #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shift_vec):
+            if sh < 0:
+                En[ind, 0:n_t + sh] = Et[-sh:]
+                Ep[ind, -sh:] = Et[0:n_t + sh]
+                Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+            else:
+                En[ind, sh:] = Et[0:n_t - sh]
+                Ep[ind, 0:n_t - sh] = Et[sh:]
+                Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+
+        # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        # for ind, sh in enumerate(shift_vec):
+        #     if sh < 0:
+        #         Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+        #     else:
+        #         Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+        #
+        # for ind, sh in enumerate(shift_vec):
+        #     if sh > 0:
+        #         Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
+        #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+        #     else:
+        #         Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+        #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+
+        dZ_tmp = (2 * np.conj(Ek) * En * (Esig - Ek**2 * np.conj(En)) +
+                  Ep**2 * (np.conj(Esig_p) - np.conj(Ep)**2 * Ek))
+
+        dZ = -(2*dZ_tmp).sum(0)
+        self.dZ = dZ
+        self.dZ /= n_t ** 2
+        return dZ
+
+    def grad_z_sd2(self):
+        """ Calculate the gradient of the Z function (functional distance) for the SD algorithm.
+        """
+        n_t = self.Et.shape[0]
+        Et = self.Et
+        Esig = self.Esig_t_tau_p
         Et_mat = np.tile(Et, (n_t, 1))  # Copy Et for each tau value
         Et_tau_p = np.zeros_like(Et_mat)  # E(t+tau)
         Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
         Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
 
+        # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        # for ind, sh in enumerate(shift_vec):
+        #     if sh < 0:
+        #         Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+        #         Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+        #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+        #     else:
+        #         Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+        #         Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
+        #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+
         shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shift_vec):
             if sh < 0:
                 Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
-                Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
-                Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
             else:
                 Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+
+        for ind, sh in enumerate(shift_vec):
+            if sh > 0:
                 Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
                 Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+            else:
+                Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+                Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
 
-        dZ_tmp = (2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
-                    np.conj(Et_tau_p)**2 * (Esig_p - np.conj(Et_mat) * Et_tau_p**2))
+        dZ_tmp_r = (2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
+                    Et_tau_p**2 * (np.conj(Esig_p) - Et_mat * np.conj(Et_tau_p)**2))
+        dZ_tmp_i = (-2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
+                    Et_tau_p**2 * (np.conj(Esig_p) - Et_mat * np.conj(Et_tau_p)**2))
 
-        dZ = -(2*dZ_tmp).sum(0)
-        self.dZ = dZ
+        dZ_r = -(dZ_tmp_r + np.conj(dZ_tmp_r)).sum(0)
+        dZ_i = (dZ_tmp_i + np.conj(dZ_tmp_i)).sum(0)
+        self.dZ = dZ_r + 1j * dZ_i
         # self.dZ /= np.abs(self.dZ).max()
+        return dZ_r, dZ_i
+
+    def grad_z_e(self, E, algo='SHG'):
+        """ Calculate the gradient of the Z function (functional distance).
+        """
+        n_t = E.shape[0]
+        Et = E
+        Esig = self.Esig_t_tau_p
+        Et_mat = np.tile(Et, (n_t, 1))  # Copy Et for each tau value
+        Et_tau_p = np.zeros_like(Et_mat)  # E(t+tau)
+        Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
+        Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
+
+        # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        # for ind, sh in enumerate(shift_vec):
+        #     if sh < 0:
+        #         Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+        #         Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+        #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+        #     else:
+        #         Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+        #         Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
+        #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shift_vec):
+            if sh < 0:
+                Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+            else:
+                Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+
+        # shift_vec_p = n_t / 2 - np.arange(n_t)
+        for ind, sh in enumerate(shift_vec):
+            if sh > 0:
+                Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
+                Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
+            else:
+                Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
+                Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
+
+        if algo == 'SHG':
+            dZ_tmp = (Et_tau_n * (np.conj(Esig) - np.conj(Et_mat) * np.conj(Et_tau_n)) +
+                      Et_tau_p * (np.conj(Esig_p) - np.conj(Et_mat) * np.conj(Et_tau_p)))
+
+            dZ = (2 * np.conj(dZ_tmp)).sum(0)
+        elif algo == 'SD':
+            dZ_tmp = (2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
+                      np.conj(Et_tau_p)**2 * (Esig_p - np.conj(Et_mat) * Et_tau_p**2))
+
+            dZ = -(2*dZ_tmp).sum(0)
+        self.dZ = dZ
+        self.dZ /= n_t ** 2
         return dZ
 
-    def grad_z_sd2(self):
-        """ Calculate the gradient of the Z function (functional distance) for the SD algorithm.
+    def grad_z_pg(self):
+        """ Calculate the gradient of the Z function (functional distance) for the PG algorithm.
         """
         n_t = self.Et.shape[0]
         Et = self.Et
@@ -804,16 +987,36 @@ class FrogCalculation(object):
                 Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
                 Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
 
-        dZ_tmp_r = (2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
-                    Et_tau_p**2 * (np.conj(Esig_p) - Et_mat * np.conj(Et_tau_p)**2))
-        dZ_tmp_i = (-2 * Et_mat * np.conj(Et_tau_n) * (np.conj(Esig) - np.conj(Et_mat)**2 * Et_tau_n) +
-                    Et_tau_p**2 * (np.conj(Esig_p) - Et_mat * np.conj(Et_tau_p)**2))
+        dZ_tmp = (Et_tau_n * np.conj(Et_tau_n) * (Esig - Et_mat * Et_tau_n * np.conj(Et_tau_n)) +
+                  Et_mat * np.conj(Et_tau_p) * (Esig_p - Et_tau_p * Et_mat * np.conj(Et_mat)) +
+                  Et_tau_p * Et_mat * (np.conj(Esig_p) - np.conj(Et_tau_p) * Et_mat * np.conj(Et_mat)))
 
-        dZ_r = -(dZ_tmp_r + np.conj(dZ_tmp_r)).sum(0)
-        dZ_i = (dZ_tmp_i + np.conj(dZ_tmp_i)).sum(0)
-        self.dZ = dZ_r + 1j * dZ_i
-        self.dZ /= np.abs(self.dZ).max()
-        return dZ_r, dZ_i
+        dZ = -(2*dZ_tmp).sum(0)
+        self.dZ = dZ
+        self.dZ /= n_t ** 2
+        return dZ
+
+    def grad_z_pg_naive(self):
+        """ Calculate the gradient of the Z function (functional distance) for the PG algorithm.
+        """
+        n_t = self.Et.shape[0]
+        Et = self.Et
+        Esig = self.Esig_t_tau_p
+        dZ = np.zeros_like(Et)
+
+        for t0 in range(Esig.shape[1]):
+            T = 0.0 + 0.0j
+            for tau in range(Esig.shape[0]):
+                tp = t0 - (tau - np.int(n_t/2))
+                if 0 <= tp < Esig.shape[1]:
+                    T += (Et[t0] * np.abs(Et[tp])**2 - Esig[t0, tau]) * np.abs(Et[tp])**2
+                tp = t0 + (tau - np.int(n_t / 2))
+                if 0 <= tp < Esig.shape[1]:
+                    T += 2.0*(np.abs(Et[tp])**2 * np.abs(Et[t0])**2 - np.real(Esig[tp, tau] * np.conj(Et[tp]))) * Et[t0]
+            dZ[t0] = T / n_t**2
+
+        self.dZ = dZ
+        return dZ
 
     def min_z_shg_naive(self):
         Et0 = self.Et
@@ -865,6 +1068,180 @@ class FrogCalculation(object):
         root.debug(''.join(('Z_a=', str(np.polyval(X, alpha)))))
         return alpha
 
+    def min_z_shg(self):
+        Et = self.Et
+        Esig = self.Esig_t_tau_p
+        dZ = self.dZ
+        n_t = Esig.shape[0]
+
+        Et_mat = np.tile(Et, (n_t, 1))
+        dZ_mat = np.tile(dZ, (n_t, 1))
+        Et_tau_n = np.zeros_like(Et_mat)
+        dZ_tau_n = np.zeros_like(Et_mat)
+        mx = (np.abs(Esig).max())**2
+
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shift_vec):
+            if sh < 0:
+                Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
+                dZ_tau_n[ind, 0:n_t + sh] = dZ[-sh:]
+            else:
+                Et_tau_n[ind, sh:] = Et[0:n_t - sh]
+                dZ_tau_n[ind, sh:] = dZ[0:n_t - sh]
+
+        dZdZ = dZ_mat * dZ_tau_n
+        dZE = dZ_mat * Et_tau_n + dZ_tau_n * Et_mat
+        DEsig = Et_mat * Et_tau_n - Esig
+
+        # Generate polynomial X that is an expansion of Z(alpha) = Z( E(t_k) + alpha*dZ/dE(t_k) ) in alpha
+        X = np.zeros(5)
+        X[0] = (np.abs(dZdZ)**2).sum()
+        X[1] = (2.0 * np.real(dZE * np.conj(dZdZ))).sum()
+        X[2] = (2.0 * np.real(DEsig * np.conj(dZdZ)) + np.abs(dZE)**2).sum()
+        X[3] = (2.0 * np.real(DEsig * np.conj(dZE))).sum()
+        X[4] = (np.abs(DEsig)**2).sum()
+        X /= (mx * n_t * n_t)
+
+        root.debug(''.join(('Poly: ', str(X[0]), ' x^4 + ', str(X[1]), ' x^3 + ', str(X[2]), ' x^2 + ',
+                            str(X[3]), ' x + ', str(X[4]))))
+
+        # We take the derivative of the polynomial and find the zero roots
+        # One of these roots is the minimum of Z
+        z_poly = np.polyder(X)
+        r = np.roots(z_poly)
+        # Only the real roots are considered (we want to go along the direction of dZ so alpha is a real number):
+        r_real = r[np.abs(r.imag) < 1e-9].real
+        root.debug(''.join(('Real roots: ', str(r_real))))
+
+        # Evaluate the polynomial for these roots and find the minimum Z:
+        Z1 = np.polyval(X, r_real)
+        min_z_ind = Z1.argmin()
+
+        alpha = r_real[min_z_ind].astype(self.dtype_r)
+
+        root.debug(''.join(('Moving distance alpha=', str(alpha))))
+        root.debug(''.join(('Z_0=', str(np.polyval(X, 0.0)))))
+        root.debug(''.join(('Z_a=', str(np.polyval(X, alpha)))))
+        return alpha
+
+    def min_z_pg(self):
+        Et = self.Et
+        Esig = self.Esig_t_tau_p
+        dZ = self.dZ
+        n_t = Esig.shape[0]
+
+        Ek = np.tile(Et, (n_t, 1))
+        dZk = np.tile(dZ, (n_t, 1))
+        En = np.zeros_like(Ek)
+        dZn = np.zeros_like(Ek)
+        mx = (np.abs(Esig).max())**2
+
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shift_vec):
+            if sh < 0:
+                En[ind, 0:n_t + sh] = Et[-sh:]
+                dZn[ind, 0:n_t + sh] = dZ[-sh:]
+            else:
+                En[ind, sh:] = Et[0:n_t - sh]
+                dZn[ind, sh:] = dZ[0:n_t - sh]
+
+        a3 = dZk*dZn*np.conj(dZn)
+        a2 = Ek*dZn*np.conj(dZn) + dZk*dZn*np.conj(En) + dZk*np.conj(dZn)*En
+        a1 = dZk*En*np.conj(En) + Ek*dZn*np.conj(En) + Ek*En*np.conj(dZn)
+        a0 = Ek*En*np.conj(En) - Esig
+
+        # Generate polynomial X that is an expansion of Z(alpha) = Z( E(t_k) + alpha*dZ/dE(t_k) ) in alpha
+        X = np.zeros(7)
+        X[0] = (a3 * np.conj(a3)).sum()
+        X[1] = (2.0*np.real(a3*np.conj(a2))).sum()
+        X[2] = (2.0*np.real(a3*np.conj(a1)) + a2*np.conj(a2)).sum()
+        X[3] = (2.0*np.real(a3*np.conj(a0) + a2*np.conj(a1))).sum()
+        X[4] = (2.0*np.real(a2*np.conj(a0)) + a1*np.conj(a1)).sum()
+        X[5] = (2.0*np.real(a1*np.conj(a0))).sum()
+        X[6] = (a0*np.conj(a0)).sum()
+        X /= (mx * n_t * n_t)
+
+        root.debug(''.join(('Poly: ', str(X[0]), ' x^6 + ', str(X[1]), ' x^5 + ', str(X[2]), ' x^4 + ', str(X[3]),
+                            ' x^3 + ', str(X[4]), ' x^2 + ', str(X[5]), ' x + ', str(X[6]))))
+
+        # We take the derivative of the polynomial and find the zero roots
+        # One of these roots is the minimum of Z
+        z_poly = np.polyder(X)
+        r = np.roots(z_poly)
+        # Only the real roots are considered (we want to go along the direction of dZ so alpha is a real number):
+        r_real = r[np.abs(r.imag) < 1e-9].real
+        root.debug(''.join(('Real roots: ', str(r_real))))
+
+        # Evaluate the polynomial for these roots and find the minimum Z:
+        Z1 = np.polyval(X, r_real)
+        min_z_ind = Z1.argmin()
+
+        alpha = r_real[min_z_ind].astype(self.dtype_r)
+
+        root.debug(''.join(('Moving distance alpha=', str(alpha))))
+        root.debug(''.join(('Z_0=', str(np.polyval(X, 0.0)))))
+        root.debug(''.join(('Z_a=', str(np.polyval(X, alpha)))))
+        return alpha
+
+    def min_z_sd(self):
+        Et = self.Et
+        Esig = self.Esig_t_tau_p
+        dZ = self.dZ
+        n_t = Esig.shape[0]
+
+        Ek = np.tile(Et, (n_t, 1))
+        dZk = np.tile(dZ, (n_t, 1))
+        En = np.zeros_like(Ek)
+        dZn = np.zeros_like(Ek)
+        mx = (np.abs(Esig).max())**2
+
+        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
+        for ind, sh in enumerate(shift_vec):
+            if sh < 0:
+                En[ind, 0:n_t + sh] = Et[-sh:]
+                dZn[ind, 0:n_t + sh] = dZ[-sh:]
+            else:
+                En[ind, sh:] = Et[0:n_t - sh]
+                dZn[ind, sh:] = dZ[0:n_t - sh]
+
+        a3 = dZk*dZk*np.conj(dZn)
+        a2 = np.conj(En)*dZk*dZk + 2*Ek*dZk*np.conj(dZn)
+        a1 = Ek*Ek*np.conj(dZn) + 2*Ek*np.conj(En)*dZk
+        a0 = Ek*Ek*np.conj(En) - Esig
+
+        # Generate polynomial X that is an expansion of Z(alpha) = Z( E(t_k) + alpha*dZ/dE(t_k) ) in alpha
+        X = np.zeros(7)
+        X[0] = (a3 * np.conj(a3)).sum()
+        X[1] = (2.0*np.real(a3*np.conj(a2))).sum()
+        X[2] = (2.0*np.real(a3*np.conj(a1)) + a2*np.conj(a2)).sum()
+        X[3] = (2.0*np.real(a3*np.conj(a0) + a2*np.conj(a1))).sum()
+        X[4] = (2.0*np.real(a2*np.conj(a0)) + a1*np.conj(a1)).sum()
+        X[5] = (2.0*np.real(a1*np.conj(a0))).sum()
+        X[6] = (a0*np.conj(a0)).sum()
+        X /= (mx * n_t * n_t)
+
+        root.debug(''.join(('Poly: ', str(X[0]), ' x^6 + ', str(X[1]), ' x^5 + ', str(X[2]), ' x^4 + ', str(X[3]),
+                            ' x^3 + ', str(X[4]), ' x^2 + ', str(X[5]), ' x + ', str(X[6]))))
+
+        # We take the derivative of the polynomial and find the zero roots
+        # One of these roots is the minimum of Z
+        z_poly = np.polyder(X)
+        r = np.roots(z_poly)
+        # Only the real roots are considered (we want to go along the direction of dZ so alpha is a real number):
+        r_real = r[np.abs(r.imag) < 1e-9].real
+        root.debug(''.join(('Real roots: ', str(r_real))))
+
+        # Evaluate the polynomial for these roots and find the minimum Z:
+        Z1 = np.polyval(X, r_real)
+        min_z_ind = Z1.argmin()
+
+        alpha = r_real[min_z_ind].astype(self.dtype_r)
+
+        root.debug(''.join(('Moving distance alpha=', str(alpha))))
+        root.debug(''.join(('Z_0=', str(np.polyval(X, 0.0)))))
+        root.debug(''.join(('Z_a=', str(np.polyval(X, alpha)))))
+        return alpha
+
     def center_peaktime(self):
         ind = np.argmax(abs(self.Et))
         shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
@@ -876,11 +1253,14 @@ class FrogCalculation(object):
         Esig_w_tau = self.Esig_w_tau
         I_rec_w_tau = np.real(Esig_w_tau * np.conj(Esig_w_tau))
         I_w_tau = self.I_w_tau
-        my = I_w_tau.max() / I_rec_w_tau.max()
+        mx = I_w_tau.max()
+        my = (I_w_tau * I_rec_w_tau).sum() / (I_rec_w_tau**2).sum()
         root.debug(''.join(('My=', str(my))))
-        G = np.sqrt(((I_w_tau - my * I_rec_w_tau) ** 2).sum() / (I_rec_w_tau.shape[0] * I_rec_w_tau.shape[1]))
+        # my = 1.0
+        G = np.sqrt(((I_w_tau - my * I_rec_w_tau) ** 2).sum() / (I_rec_w_tau.shape[0] * I_rec_w_tau.shape[1])) / mx
         toc = time.clock()
         root.debug(''.join(('Time spent: ', str(toc - tic))))
+        self.G_hist.append(G)
         return G
 
     def get_trace_abs(self, norm=True):
@@ -933,11 +1313,7 @@ class FrogCalculation(object):
         self.setup_vanilla_algorithm()
         for c in range(cycles):
             root.debug(''.join(('Cycle ', str(c + 1), '/', str(cycles))))
-            if algo == 'SD' or algo == 'TG':
-                self.generate_Esig_t_tau_sd()
-            else:
-                # self.generate_Esig_t_tau_outer_shg()
-                self.generate_Esig_t_tau_shg()
+            self.generate_Esig_t_tau(algo)
             self.generate_Esig_w_tau()
             G = self.calc_reconstruction_error()
             self.apply_intensity_data()
@@ -964,11 +1340,7 @@ class FrogCalculation(object):
         self.setup_gp_algorithm()
         for c in range(cycles):
             root.debug(''.join(('Cycle ', str(c + 1), '/', str(cycles))))
-            if algo == 'SD' or algo == 'TG':
-                self.generate_Esig_t_tau_sd()
-            else:
-                # self.generate_Esig_t_tau_outer_shg()
-                self.generate_Esig_t_tau_shg()
+            self.generate_Esig_t_tau(algo)
             self.generate_Esig_w_tau()
             G = self.calc_reconstruction_error()
             self.apply_intensity_data()
@@ -992,14 +1364,15 @@ if __name__ == '__main__':
     tau_pulse = 100e-15
 
     p = sp.SimulatedPulse(N, dt, l0, tau_pulse)
-    p.generateGaussianCubicSpectralPhase(2e-27, 1e-40)
+    p.generateGaussianCubicSpectralPhase(1e-27, 0.5e-40)
     # p.generateGaussianCubicPhase(5e24, 3e39)
     # p.generateGaussian(tau_pulse)
     # p.generateDoublePulse(tau_pulse, deltaT=0.5e-12)
     gt = sp.SimulatedFrogTrace(N, dt, l0)
     gt.pulse = p
-    # IfrogSHG = gt.generateSHGTraceDt(N, dt, l0 / 2)
-    IfrogSD = gt.generateSDTraceDt(N, dt, 800e-9)
+    IfrogSHG = gt.generateSHGTraceDt(N, dt, l0 / 2)
+    IfrogSD = gt.generateSDTraceDt(N, dt, l0)
+    IfrogPG = gt.generatePGTraceDt(N, dt, l0)
     #     Ifrog = gt.addNoise(0.01, 0.1)
     l = gt.getWavelengths()
     t = gt.getTimedelays()
@@ -1008,14 +1381,16 @@ if __name__ == '__main__':
 
     frog.init_pulsefield_random(N, dt, l0)
 
-    # frog.condition_frog_trace(IfrogSD[::-1, :], l[0], l[-1], t[0], t[-1], thr=0)
+    # frog.condition_frog_trace2(IfrogSHG, l[0], l[-1], t[0], t[-1], thr=0)
     frog.condition_frog_trace2(IfrogSD, l[0], l[-1], t[0], t[-1], thr=0)
+    # frog.condition_frog_trace2(IfrogPG, l[0], l[-1], t[0], t[-1], thr=0)
     # frog.create_frog_trace_gaussian(N, dt, l0, tau_pulse, algo='SD')
-    # frog.create_frog_trace_gaussian_spectral(N, dt, l0, tau_pulse, b=2e-27, c=1e-40, algo='SD')
+    # frog.create_frog_trace_gaussian_spectral(N, dt, l0, tau_pulse, b=1e-27, c=0.5e-40, algo='PG')
     # frog.init_pulsefield_perfect(N, dt, l0, tau_pulse)
     # frog.I_w_tau = np.abs(frog.Esig_w_tau)**2
     # frog.load_frog_trace('./frogtrace_2016-03-31_11h29_image.png', thr=0.25, lStartPixel=50, lStopPixel=665,
     #                      tStartPixel=18, tStopPixel=65)
     er = np.array([])
-    # er = frog.run_cycle_vanilla(5, 'SHG', roll_fft=False)
-    er = np.hstack((er, frog.run_cycle_gp(1, 'SD', roll_fft=False)))
+    er = frog.run_cycle_vanilla(20, 'SD', roll_fft=True)
+    # er = np.hstack((er, frog.run_cycle_gp(1, 'SHG', roll_fft=False)))
+    # er = np.hstack((er, frog.run_cycle_gp(50, 'PG', roll_fft=True)))
