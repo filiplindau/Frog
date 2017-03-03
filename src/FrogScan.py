@@ -43,7 +43,7 @@ import PyTango as pt
 import threading
 import numpy as np
 
-import FrogCalculationCL as FrogCalculation
+import FrogCalculationSimpleGP as FrogCalculation
 
 
 class MyQSplitter(QtGui.QSplitter):
@@ -349,8 +349,8 @@ class TangoDeviceClient(QtGui.QWidget):
             self.frogResultPlotPhase.hide()
 
     def calculatePulseParameters(self):
-        t = self.frogCalc.getT()
-        Et = self.frogCalc.getTraceAbs()
+        t = self.frogCalc.get_t()
+        Et = self.frogCalc.get_trace_abs()
 
         # Use first 10% of trace as background level
         bkg = Et[0:np.maximum(2, np.int(Et.shape[0] * 0.1))].mean() * 1.1
@@ -393,53 +393,66 @@ class TangoDeviceClient(QtGui.QWidget):
     def startFrogInversion(self):
         data = np.uint8(self.scanDataRoi)
         N = self.frogNSpinbox.value()
-        if self.timeData.shape != 0:
-            dt = self.timeData[1] - self.timeData[0]
-        else:
-            dt = 1e-15
-
         frogImg = self.frogRoiImageWidget.getImageItem().image
         if frogImg.size > 0:
             lStartInd = np.int(self.frogRoi.pos()[0])
-            lStopInd = np.int(self.frogRoi.pos()[0]) + np.ceil(self.frogRoi.size()[0])
-            root.debug(
-                ''.join(('Wavelength range: ', str(self.wavelengths[lStartInd]), '-', str(self.wavelengths[lStopInd]))))
+            lStopInd = np.int(self.frogRoi.pos()[0] + np.ceil(self.frogRoi.size()[0]))
+            root.debug(''.join(('Wavelength range: ', str(self.wavelengths[lStartInd]), ' - ',
+                       str(self.wavelengths[lStopInd]))))
             l_start = self.wavelengths[lStartInd] * 1e-9
             l_stop = self.wavelengths[lStopInd] * 1e-9
             l0 = (l_stop + l_start) / 2
 
             tStartInd = np.int(self.frogRoi.pos()[1])
-            tStopInd = np.int(self.frogRoi.pos()[1]) + np.ceil(self.frogRoi.size()[1])
-            root.debug(''.join(('Time range: ', str(self.timeData[tStartInd]), '-', str(self.timeData[tStopInd]))))
+            tStopInd = np.int(self.frogRoi.pos()[1] + np.ceil(self.frogRoi.size()[1]))
+            root.debug(''.join(('Time range: ', str(self.timeData[tStartInd]), ' - ', str(self.timeData[tStopInd]))))
             tau_start = self.timeData[tStartInd]
             tau_stop = self.timeData[tStopInd]
+            if self.timeData.shape != 0:
+                dt = self.frogDtSpinbox.value() * 1e-15
+            else:
+                dt = 1e-15
+
+            root.debug('Wavelength input data: l_start=' + str(l_start) + ', l_stop=' + str(l_stop) +
+                       ', type: ' + str(type(lStartInd)))
+            root.debug('Time input data: tau_start=' + str(tau_start) + ', tau_stop=' + str(tau_stop) + ', dt=' +
+                       str(dt))
 
             self.frogCalc.init_pulsefield_random(N, dt, l0)
-            self.frogCalc.condition_frog_trace(frogImg, l_start, l_stop, tau_start, tau_stop)
+            self.frogCalc.condition_frog_trace2(frogImg, l_start, l_stop, tau_start, tau_stop, N,
+                                                thr=self.frogThresholdSpinbox.value())
 
-            self.frogCalcImageWidget.setImage(self.frogCalc.I_w_tau)
+            root.debug('frogImg shape: ' + str(frogImg.shape) + ', 10 values: ',
+                       str(frogImg[0, 0:10]))
+            root.debug('I_w_tau shape: ' + str(self.frogCalc.I_w_tau.shape) + ', 10 values: ' +
+                       str(self.frogCalc.I_w_tau[0, 0:10]))
+            self.frogCalcImageWidget.setImage(np.transpose(self.frogCalc.I_w_tau))
             self.frogCalcImageWidget.autoRange()
             self.frogCalcImageWidget.update()
 
+            self.continueFrogInversion()
+
+    def continueFrogInversion(self):
+        if self.frogCalc.I_w_tau is not None:
             algo = str(self.frogAlgoCombobox.currentText())
             if str(self.frogMethodCombobox.currentText()) == 'Vanilla':
-                er = self.frogCalc.runCycleVanilla(self.frogIterationsSpinbox.value(), algo=algo, useCL=True)
+                er = self.frogCalc.run_cycle_vanilla(self.frogIterationsSpinbox.value(), algo=algo)
             elif str(self.frogMethodCombobox.currentText()) == 'GP':
-                er = self.frogCalc.runCycleGP(self.frogIterationsSpinbox.value(), algo=algo, useCL=True)
+                er = self.frogCalc.run_cycle_gp(self.frogIterationsSpinbox.value(), algo=algo)
 
-            self.frogErrorPlot.setData(er)
+            self.frogErrorPlot.setData(self.frogCalc.G_hist)
             self.frogErrorPlot.update()
 
-            t = self.frogCalc.getT()
-            Et = self.frogCalc.getTraceAbs()
-            Ephi = self.frogCalc.getTracePhase()
+            t = self.frogCalc.get_t()
+            Et = self.frogCalc.get_trace_abs()
+            Ephi = self.frogCalc.get_trace_phase(linear_comp=True)
 
             self.frogResultPlotAbs.setData(x=t, y=Et)
             self.frogResultPlotAbs.update()
             self.frogResultPlotPhase.setData(x=t, y=Ephi)
             self.frogResultPlotPhase.update()
 
-            self.frogCalcResultImageWidget.setImage(np.abs(self.frogCalc.Esig_w_tau) ** 2)
+            self.frogCalcResultImageWidget.setImage(np.transpose(np.abs(self.frogCalc.Esig_w_tau) ** 2))
             self.frogCalcResultImageWidget.autoRange()
             self.frogCalcResultImageWidget.update()
 
@@ -566,6 +579,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.settings.setValue('frogIterations', np.int(self.frogIterationsSpinbox.value()))
         self.settings.setValue('frogSize', np.int(self.frogNSpinbox.value()))
         self.settings.setValue('frogMethod', np.int(self.frogMethodCombobox.currentIndex()))
+        self.settings.setValue('frogDt', np.float(self.frogDtSpinbox.value()))
         self.settings.setValue('frogThreshold', np.float(self.frogThresholdSpinbox.value()))
         self.settings.setValue('frogKernel', np.int(self.frogKernelSpinbox.value()))
         self.settings.setValue('frogRoiPosX', np.int(self.frogRoi.pos()[0]))
@@ -587,12 +601,14 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogMethodCombobox.addItem('GP')
         self.frogMethodCombobox.setCurrentIndex(self.settings.value('frogMethod', 0).toInt()[0])
         self.frogAlgoCombobox = QtGui.QComboBox()
-        self.frogAlgoCombobox.addItem('TG')
+        self.frogAlgoCombobox.addItem('PG')
         self.frogAlgoCombobox.addItem('SHG')
         self.frogAlgoCombobox.addItem('SD')
         self.frogAlgoCombobox.setCurrentIndex(self.settings.value('frogAlgo', 0).toInt()[0])
         self.frogStartButton = QtGui.QPushButton('Start')
         self.frogStartButton.clicked.connect(self.startFrogInversion)
+        self.frogContinueButton = QtGui.QPushButton('Continue')
+        self.frogContinueButton.clicked.connect(self.continueFrogInversion)
         self.frogIterationsSpinbox = QtGui.QSpinBox()
         #         self.frogIterationsSpinbox.setValue(20)
         self.frogIterationsSpinbox.setMinimum(0)
@@ -605,6 +621,12 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogThresholdSpinbox.setDecimals(3)
         self.frogThresholdSpinbox.setValue(self.settings.value('frogThreshold', 0.05).toDouble()[0])
         self.frogThresholdSpinbox.editingFinished.connect(self.updateFrogRoi)
+        self.frogDtSpinbox = QtGui.QDoubleSpinBox()
+        self.frogDtSpinbox.setMinimum(0.0)
+        self.frogDtSpinbox.setMaximum(10000.0)
+        self.frogDtSpinbox.setSingleStep(1.0)
+        self.frogDtSpinbox.setDecimals(1)
+        self.frogDtSpinbox.setValue(self.settings.value('frogDt', 1.0).toDouble()[0])
         self.frogKernelSpinbox = QtGui.QSpinBox()
         self.frogKernelSpinbox.setMinimum(1)
         self.frogKernelSpinbox.setMaximum(99)
@@ -633,22 +655,25 @@ class TangoDeviceClient(QtGui.QWidget):
                                      2, 0)
 
         self.frogGridLayout2 = QtGui.QGridLayout()
-        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog method"), 0, 0)
-        self.frogGridLayout2.addWidget(self.frogMethodCombobox, 0, 1)
-        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog algorithm"), 1, 0)
-        self.frogGridLayout2.addWidget(self.frogAlgoCombobox, 1, 1)
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog algorithm"), 0, 0)
+        self.frogGridLayout2.addWidget(self.frogAlgoCombobox, 0, 1)
+        self.frogGridLayout2.addWidget(QtGui.QLabel("Frog method"), 1, 0)
+        self.frogGridLayout2.addWidget(self.frogMethodCombobox, 1, 1)
         self.frogGridLayout2.addWidget(QtGui.QLabel("Frog size (pow 2)"), 2, 0)
         self.frogGridLayout2.addWidget(self.frogNSpinbox, 2, 1)
-        self.frogGridLayout2.addWidget(QtGui.QLabel("Iterations"), 3, 0)
-        self.frogGridLayout2.addWidget(self.frogIterationsSpinbox, 3, 1)
+        self.frogGridLayout2.addWidget(QtGui.QLabel("dt (fs)"), 3, 0)
+        self.frogGridLayout2.addWidget(self.frogDtSpinbox, 3, 1)
 
         self.frogGridLayout3 = QtGui.QGridLayout()
         self.frogGridLayout3.addWidget(QtGui.QLabel("Load trace"), 0, 0)
         self.frogGridLayout3.addWidget(self.frogLoadButton, 0, 1)
         self.frogGridLayout3.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding),
                                      2, 0)
-        self.frogGridLayout3.addWidget(QtGui.QLabel("Invert trace"), 3, 0)
-        self.frogGridLayout3.addWidget(self.frogStartButton, 3, 1)
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Iterations"), 3, 0)
+        self.frogGridLayout3.addWidget(self.frogIterationsSpinbox, 3, 1)
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Invert trace"), 4, 0)
+        self.frogGridLayout3.addWidget(self.frogStartButton, 4, 1)
+        self.frogGridLayout3.addWidget(self.frogContinueButton, 5, 1)
 
         self.frogGridLayout4 = QtGui.QGridLayout()
         self.frogGridLayout4.addWidget(QtGui.QLabel("Show Et"), 0, 0)
@@ -762,7 +787,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.startPosSpinbox.setMinimum(-2000000)
         self.startPosSpinbox.setValue(self.settings.value('startPos', 0.0).toDouble()[0])
         self.stepSizeSpinbox = QtGui.QDoubleSpinBox()
-        self.stepSizeSpinbox.setDecimals(3)
+        self.stepSizeSpinbox.setDecimals(4)
         self.stepSizeSpinbox.setMaximum(2000000)
         self.stepSizeSpinbox.setMinimum(-2000000)
         self.stepSizeSpinbox.setValue(self.settings.value('step', 0.05).toDouble()[0])
@@ -801,26 +826,27 @@ class TangoDeviceClient(QtGui.QWidget):
 
         self.centerWavelengthSpinbox = QtGui.QDoubleSpinBox()
         self.centerWavelengthSpinbox.setMinimum(200)
-        self.centerWavelengthSpinbox.setMaximum(1000)
+        self.centerWavelengthSpinbox.setMaximum(2000)
         self.centerWavelengthSpinbox.setValue(self.settings.value('centerWavelength', 400).toDouble()[0])
         self.centerWavelengthSpinbox.editingFinished.connect(self.generateWavelengths)
 
         self.dispersionSpinbox = QtGui.QDoubleSpinBox()
         self.dispersionSpinbox.setMinimum(0)
         self.dispersionSpinbox.setMaximum(10)
+        self.dispersionSpinbox.setDecimals(4)
         self.dispersionSpinbox.setValue(self.settings.value('dispersion', 0.03).toDouble()[0])
         self.dispersionSpinbox.editingFinished.connect(self.generateWavelengths)
 
         self.shutterLabel = QtGui.QLabel()
         self.shutterSpinbox = QtGui.QDoubleSpinBox()
         self.shutterSpinbox.setMinimum(0)
-        self.shutterSpinbox.setMaximum(1000)
+        self.shutterSpinbox.setMaximum(1000000)
         self.shutterSpinbox.editingFinished.connect(self.writeShutter)
 
         self.gainLabel = QtGui.QLabel()
         self.gainSpinbox = QtGui.QDoubleSpinBox()
         self.gainSpinbox.setMinimum(0)
-        self.gainSpinbox.setMaximum(100)
+        self.gainSpinbox.setMaximum(100000)
         self.gainSpinbox.editingFinished.connect(self.writeGain)
 
         self.normalizePumpCheck = QtGui.QCheckBox('Normalize')
