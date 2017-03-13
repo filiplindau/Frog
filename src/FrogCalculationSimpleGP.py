@@ -193,10 +193,13 @@ class FrogCalculation(object):
                                   t_data[t_stop_pixel], thr)
 
     def load_frog_trace2(self, filename, thr=0.0, l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1):
-        f_name_root = '_'.join((filename.split('_')[0:3]))
+        f_name_root = '_'.join((filename.split('_')[:-1]))
+        root.debug(f_name_root)
         t_data = np.loadtxt(''.join((f_name_root, '_timevector.txt')))
         t_data = t_data - t_data.mean()
-        l_data = np.loadtxt(''.join((f_name_root, '_wavelengthvector.txt'))) * 1e-9
+        l_data = np.loadtxt(''.join((f_name_root, '_wavelengthvector.txt')))
+        if l_data[0] > 1:
+            l_data = l_data * 1e-9
         pic = np.float32(imread(''.join((f_name_root, '_image.png'))))
         pic_n = pic / pic.max()
 
@@ -1300,7 +1303,7 @@ class FrogCalculation(object):
         return Et
 
     def get_trace_phase(self, linear_comp=False):
-        eps = 0.05
+        eps = 0.01
 
         # Center peak in time
         ind = np.argmax(abs(self.Et))
@@ -1334,6 +1337,30 @@ class FrogCalculation(object):
     def get_t(self):
         return self.t
 
+    def get_trace_summary(self):
+        """
+        Calculate trace parameters such as intensity FWHM and phase difference over the trace region.
+        Should also calculate frequency space components phi**2, phi**3 ... in the future
+        :return:
+        t_fwhm: full width at half maximum of the intensity trace (E-field squared)
+        delta_ph: phase difference (max-min) of the phase trace
+        """
+        Et = self.get_trace_abs()
+        It = Et**2
+        t = self.get_t()
+        ph = self.get_trace_phase()
+        # Calculate FWHM
+        t_ind = np.where(np.diff(np.sign(It - 0.5)))[0]
+        if t_ind.shape[0] > 1:
+            t_fwhm = t[t_ind[-1]] - t[t_ind[0]]
+            ph_fwhm = ph[t_ind[0]:t_ind[-1]]
+            ph_good = ph_fwhm[np.isfinite(ph_fwhm)]
+            delta_ph = ph_good.max() - ph_good.min()
+        else:
+            t_fwhm = np.nan
+            delta_ph = np.nan
+        return t_fwhm, delta_ph
+
     def setup_vanilla_algorithm(self):
         pass
 
@@ -1360,7 +1387,6 @@ class FrogCalculation(object):
         deltaT = time.clock() - t0
         root.debug(''.join(('Total runtime ', str(deltaT))))
         root.debug(''.join((str(cycles / deltaT), ' iterations/s')))
-        print(''.join((str(cycles / deltaT), ' iterations/s')))
         return np.array(error)
 
     def setup_gp_algorithm(self):
@@ -1387,13 +1413,12 @@ class FrogCalculation(object):
         deltaT = time.clock() - t0
         root.debug(''.join(('Total runtime ', str(deltaT))))
         root.debug(''.join((str(cycles / deltaT), ' iterations/s')))
-        print(''.join((str(cycles / deltaT), ' iterations/s')))
         return np.array(error)
 
 
 if __name__ == '__main__':
     N = 256
-    dt = 20e-15
+    dt = 10e-15
     l0 = 263.5e-9
     tau_pulse = 100e-15
 
@@ -1426,10 +1451,10 @@ if __name__ == '__main__':
     # dt = 6e-15
     # l0 = 263.5e-9
     # frog.init_pulsefield_random(N, dt, l0)
-    frog.load_frog_trace2('./frogtrace_2017-02-16_14h44_image.png', thr=0.15, l_start_pixel=0, l_stop_pixel=-1,
+    frog.load_frog_trace2('./data/frogtrace_2017-03-08_10h43_image.png', thr=0.15, l_start_pixel=0, l_stop_pixel=-1,
                          t_start_pixel=0, t_stop_pixel=-1)
     er = np.array([])
-    er = frog.run_cycle_vanilla(50, 'SD', roll_fft=False)
+    er = frog.run_cycle_vanilla(1, 'PG', roll_fft=False)
     # er = frog.run_cycle_gp(20, 'SD', roll_fft=False)
     # er = np.hstack((er, frog.run_cycle_gp(1, 'SHG', roll_fft=False)))
     # er = np.hstack((er, frog.run_cycle_gp(50, 'PG', roll_fft=True)))
