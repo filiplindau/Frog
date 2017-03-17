@@ -121,6 +121,13 @@ class SimulatedPulse(object):
         return l_sample, Il
 
     def setEt(self, Et, t=None):
+        """
+        Manually electric field vector. If no time vector is supplied, the internal is used. Then the
+        new vector must have the same number of elements.
+        :param Et: New electric field vector
+        :param t: New time vector or None
+        :return:
+        """
         if t is not None:
             self.t = t
             self.tspan = np.abs(t.max()-t.min())
@@ -129,6 +136,11 @@ class SimulatedPulse(object):
         self.Et = Et
         
     def getShiftedEt(self, shift):
+        """
+        Return shifted electric field vector. Useful for generating time delays
+        :param shift: Number of timesteps to shift the vector
+        :return: Shifted electroc field. Exposed edges are filled with zeros.
+        """
         sh = np.int(shift)
         Ets = np.zeros_like(self.Et)
         # root.debug(''.join(('Shift: ', str(sh))))

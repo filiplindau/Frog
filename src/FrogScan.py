@@ -16,6 +16,7 @@ motorName = 'b-v0-gunlaser-csdb-0:10000/testgun/motors/zst25'
 from PyQt4 import QtGui, QtCore
 
 from scipy.signal import medfilt2d
+from scipy.ndimage import gaussian_filter
 from matplotlib.pyplot import imsave
 from scipy.misc import imread
 from PIL import Image
@@ -40,6 +41,13 @@ root.setLevel(logging.CRITICAL)
 
 from AttributeReadThreadClass import AttributeClass
 import pyqtgraph as pq
+
+pq.graphicsItems.GradientEditorItem.Gradients['greyclip2'] = {
+    'ticks': [(0.0, (0, 0, 50, 255)), (0.0001, (0, 0, 0, 255)), (1.0, (255, 255, 255, 255))], 'mode': 'rgb'}
+pq.graphicsItems.GradientEditorItem.Gradients['thermalclip'] = {
+    'ticks': [(0, (0, 0, 50, 255)), (0.0001, (0, 0, 0, 255)), (0.3333, (185, 0, 0, 255)), (0.6666, (255, 220, 0, 255)),
+              (1, (255, 255, 255, 255))], 'mode': 'rgb'}
+
 import PyTango as pt
 import threading
 import numpy as np
@@ -89,31 +97,24 @@ class TangoDeviceClient(QtGui.QWidget):
         self.attributes['gain'] = AttributeClass('gain', self.devices['camera'], 0.5)
         self.attributes['position'] = AttributeClass('position', self.devices['motor'], 0.05)
         self.attributes['speed'] = AttributeClass('velocity', self.devices['motor'], 0.05)
-        # self.attributes['triggerdelay'] = AttributeClass('triggerdelay', self.devices['redpitaya'], 0.3)
-        # self.attributes['triggermode'] = AttributeClass('triggermode', self.devices['redpitaya'], 1.0)
-        # self.attributes['triggersource'] = AttributeClass('triggersource', self.devices['redpitaya'], 1.0)
-        # self.attributes['recordlength'] = AttributeClass('recordlength', self.devices['redpitaya'], 0.3)
-        # self.attributes['samplerate'] = AttributeClass('samplerate', self.devices['redpitaya'], 0.3)
 
         self.attributes['image'].attrSignal.connect(self.readImage)
         self.attributes['shutter'].attrSignal.connect(self.readShutter)
         self.attributes['gain'].attrSignal.connect(self.readGain)
         self.attributes['position'].attrSignal.connect(self.readPosition)
         self.attributes['speed'].attrSignal.connect(self.readSpeed)
-        # self.attributes['triggerdelay'].attrSignal.connect(self.readTrigDelay)
-        # self.attributes['triggermode'].attrSignal.connect(self.readTrigMode)
-        # self.attributes['triggersource'].attrSignal.connect(self.readTrigSource)
-        # self.attributes['recordlength'].attrSignal.connect(self.readRecordLength)
-        # self.attributes['samplerate'].attrSignal.connect(self.readSampleRate)
 
         self.roiData = np.zeros((2, 2))
-        self.wavelengths = None
+        self.scanWavelengths = None
         self.trendData1 = None
         self.trendData2 = None
         self.scanData = np.array([])
-        self.scanDataRoi = np.array([])
-        self.filteredImg = np.array([])
-        self.timeData = np.array([])
+        self.frogRawData = np.array([])
+        self.frogFilteredData = np.array([])
+        self.frogWavelengths = np.array([])
+        self.frogTimeData = np.array([])
+        self.frogCentralWavelength = 0.0
+        self.scanTimeData = np.array([])
         self.timeMarginal = np.array([])
         self.timeMarginalTmp = 0
         self.posData = np.array([])
@@ -136,18 +137,7 @@ class TangoDeviceClient(QtGui.QWidget):
 
         self.setupLayout()
 
-
-    #         splitterSizes = [self.settings.value('splitterSize0',200).toInt()[0], self.settings.value('splitterSize1',200).toInt()[0], self.settings.value('splitterSize2',200).toInt()[0]]
-    #         root.debug(''.join(('New splitter sizes: ', str(splitterSizes))))
-    #         self.plotSplitter.setSizes(splitterSizes)
-    #         self.plotSplitter.setSizePolicy(QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Expanding)
-    #         self.plotSplitter.update()
-    #         root.debug(''.join(('Splitter sizes: ', str(self.plotSplitter.sizes()))))
-
     def readImage(self, data):
-        #         root.debug(''.join(('Image data type: ', str(type(data.value)))))
-        #         root.debug(''.join(('Image size: ', str(type(data.value.shape)))))
-
         imData = np.transpose(data.value)
         self.spectrumImageWidget.setImage(imData, autoRange=False, autoLevels=True)
         self.roiData = self.ROI.getArrayRegion(imData, self.spectrumImageWidget.getImageItem())
@@ -195,6 +185,11 @@ class TangoDeviceClient(QtGui.QWidget):
         self.avgSamples = self.averageSpinbox.value()
         root.debug("Averging " + str(self.avgSamples) + " samples")
 
+    def setStepSize(self):
+        timeStep = self.stepSizeSpinbox.value() * 1e-3 * 2 / 299792458.0 * 1e15
+        root.debug("Time step " + str(timeStep) + " fs")
+        self.stepSizeLabel.setText("Step size ({0:.1f} fs)".format(timeStep))
+
     def generateWavelengths(self):
         l0 = self.centerWavelengthSpinbox.value() * 1e-9
         dl = self.dispersionSpinbox.value() * 1e-9
@@ -204,17 +199,17 @@ class TangoDeviceClient(QtGui.QWidget):
         globalWavelengths = np.linspace(l0 - lrange / 2, l0 + lrange / 2, imSize)
         startInd = np.int(self.ROI.pos()[0])
         stopInd = np.int(self.ROI.pos()[0]) + np.ceil(self.ROI.size()[0])
-        #         root.debug(''.join(('Wavelength range: ', str(globalWavelengths[startInd]),  '-', str(globalWavelengths[stopInd]))))
-        self.wavelengths = globalWavelengths[startInd:stopInd]
+        self.scanWavelengths = globalWavelengths[startInd:stopInd]
 
-        self.plot1.setData(x=self.wavelengths, y=self.spectrumData)
+        if self.scanWavelengths.shape[0] == self.spectrumData.shape[0]:
+            self.plot1.setData(x=self.scanWavelengths, y=self.spectrumData)
 
     def startScan(self):
         self.scanData = None
         self.trendData1 = None
         self.trendData2 = None
         self.timeMarginalTmp = 0
-        self.timeData = np.array([])
+        self.scanTimeData = np.array([])
         self.timeMarginal = np.array([])
         self.posData = np.array([])
         self.scanning = True
@@ -244,17 +239,17 @@ class TangoDeviceClient(QtGui.QWidget):
         im = Image.fromarray(data)
         im.save(filename)
         #         imsave(filename, data)
-        data = self.timeData
+        data = self.scanTimeData
         filename = os.path.join(pathName, fileNameBase + '_timevector.txt')
         np.savetxt(filename, data)
-        data = self.wavelengths
+        data = self.scanWavelengths
         filename = os.path.join(pathName, fileNameBase + '_wavelengthvector.txt')
         np.savetxt(filename, data)
 
     def scanUpdateAction(self):
         self.scanTimer.stop()
         while self.running is True:
-            time.sleep(0.1)
+            time.sleep(0.02)
         newPos = self.targetPos + self.stepSizeSpinbox.value()
         root.debug('New pos: ' + str(newPos))
         self.attributes['position'].attr_write(newPos)
@@ -275,27 +270,27 @@ class TangoDeviceClient(QtGui.QWidget):
         # pos = np.double(str(self.currentPosLabel.text()))
         pos = self.currentPos
         newTime = (pos - self.startPosSpinbox.value()) * 2 * 1e-3 / 299792458.0
-        self.timeData = np.hstack((self.timeData, newTime))
+        self.scanTimeData = np.hstack((self.scanTimeData, newTime))
         self.posData = np.hstack((self.posData, pos * 1e-3))
-        root.debug(''.join(('Time vector: ', str(self.timeData))))
+        root.debug(''.join(('Time vector: ', str(self.scanTimeData))))
         root.debug(''.join(('Time marginal: ', str(self.timeMarginal))))
-        x0, x1 = (self.wavelengths[0], self.wavelengths[-1])
-        y0, y1 = (self.timeData[0], self.timeData[-1])
-        xscale, yscale = (x1 - x0) / self.wavelengths.shape[0], (y1 - y0) / self.timeData.shape[0]
-        self.frogImageWidget.setImage(np.transpose(self.scanData), autoRange=False, autoLevels=True,
+        x0, x1 = (self.scanWavelengths[0], self.scanWavelengths[-1])
+        y0, y1 = (self.scanTimeData[0], self.scanTimeData[-1])
+        xscale, yscale = (x1 - x0) / self.scanWavelengths.shape[0], (y1 - y0) / self.scanTimeData.shape[0]
+        self.scanImageWidget.setImage(np.transpose(self.scanData), autoRange=False, autoLevels=True,
                                       scale=[xscale, yscale], pos=[x0, y0])
         if self.timeUnitsRadio.isChecked() is True:
-            self.plot3.setData(x=self.timeData * 1e12, y=self.timeMarginal)
+            self.plot3.setData(x=self.scanTimeData * 1e12, y=self.timeMarginal)
         else:
             self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
 
     def measureData(self):
         roiDataFilt = medfilt2d(np.double(self.roiData), 5)
         self.spectrumData = np.sum(self.roiData, 1) / self.roiData.shape[1]
-        if self.wavelengths is None:
+        if self.scanWavelengths is None:
             self.generateWavelengths()
-        if self.wavelengths.shape[0] == self.spectrumData.shape[0]:
-            self.plot1.setData(x=self.wavelengths, y=self.spectrumData)
+        if self.scanWavelengths.shape[0] == self.spectrumData.shape[0]:
+            self.plot1.setData(x=self.scanWavelengths, y=self.spectrumData)
             self.plot1.update()
 
         #         goodInd = np.arange(self.signalStartIndex.value(), self.signalEndIndex.value() + 1, 1)
@@ -342,7 +337,7 @@ class TangoDeviceClient(QtGui.QWidget):
 
     def xAxisUnitsToggle(self):
         if self.timeUnitsRadio.isChecked() is True:
-            self.plot3.setData(x=self.timeData * 1e12, y=self.timeMarginal)
+            self.plot3.setData(x=self.scanTimeData * 1e12, y=self.timeMarginal)
         else:
             self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
 
@@ -351,6 +346,20 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogResultViewbox.linkedViewChanged(self.frogResultPlotitem.vb, self.frogResultViewbox.XAxis)
 
     def updateFrogResultPlot(self):
+        if self.frogTemporalSpectralCombobox.currentText() == "Temporal":
+            x = self.frogCalc.get_t()
+            Eabs = self.frogCalc.get_trace_abs()**2
+            Ephi = self.frogCalc.get_trace_phase(linear_comp=True)
+        else:
+            x = self.frogCalc.get_w()
+            Eabs = self.frogCalc.get_trace_spectral_abs()**2
+            Ephi = self.frogCalc.get_trace_spectral_phase(linear_comp=True)
+
+        self.frogResultPlotAbs.setData(x=x, y=Eabs)
+        self.frogResultPlotAbs.update()
+        self.frogResultPlotPhase.setData(x=x, y=Ephi)
+        self.frogResultPlotPhase.update()
+
         if self.frogEtCheckbox.isChecked() is True:
             self.frogResultPlotAbs.show()
         else:
@@ -362,53 +371,61 @@ class TangoDeviceClient(QtGui.QWidget):
             self.frogResultPlotPhase.hide()
 
     def calculatePulseParameters(self):
-        t = self.frogCalc.get_t()
-        Et = self.frogCalc.get_trace_abs()
-
-        # Use first 10% of trace as background level
-        bkg = Et[0:np.maximum(2, np.int(Et.shape[0] * 0.1))].mean() * 1.1
-        EtN = np.maximum(0, Et - bkg) / (Et.max() - bkg)
-        ItN = EtN**2
-        aboveInd = np.argwhere(ItN > 0.5)
-        tFWHM = np.abs(t[aboveInd[-1, 0]] - t[aboveInd[0, 0]])
+        tFWHM, delta_ph = self.frogCalc.get_trace_summary()
         s_t = '%.3f' % (tFWHM * 1e12)
         self.frogEtFWHMLabel.setText(''.join((s_t, ' ps')))
 
-        t0 = np.trapz(ItN * t, t) / np.trapz(EtN, t)
-        tRMS = np.sqrt(np.trapz(EtN * (t - t0) ** 2, t) / np.trapz(EtN, t))
-        s_t = '%.3f' % (tRMS * 1e12)
-        self.frogEtRMSLabel.setText(''.join((s_t, ' ps')))
-
-        ph = self.frogCalc.get_trace_phase()
+        if self.frogTemporalSpectralCombobox.currentText() == 'Temporal':
+            ph = self.frogCalc.get_trace_phase()
+        else:
+            ph = self.frogCalc.get_trace_spectral_phase()
         ph_good = ph[np.isfinite(ph)]
-        self.frogEtPhaseLabel.setText('{0:.2f} rad'.format(ph_good.max()-ph_good.min()))
+        self.frogEtPhaseLabel.setText('{0:.2f} rad'.format(delta_ph))
+
+        self.updateExpansionCoefficients()
+
+    def updateExpansionCoefficients(self):
+        if self.frogTemporalSpectralCombobox.currentText() == 'Temporal':
+            p = self.frogCalc.get_temporal_phase_expansion(orders=4, prefix=1e-15)
+            self.frogExpansion1.setText("{0:.2e} fs".format(p[3]))
+            self.frogExpansion2.setText("{0:.2e} fs^2".format(p[2]))
+            self.frogExpansion3.setText("{0:.2e} fs^3".format(p[1]))
+            self.frogExpansion4.setText("{0:.2e} fs^4".format(p[0]))
+        else:
+            p = self.frogCalc.get_spectral_phase_expansion(orders=4, prefix=2*np.pi*1e15)
+            self.frogExpansion1.setText("{0:.2e} fs^-1".format(p[3]))
+            self.frogExpansion2.setText("{0:.2e} fs^-2".format(p[2]))
+            self.frogExpansion3.setText("{0:.2e} fs^-3".format(p[1]))
+            self.frogExpansion4.setText("{0:.2e} fs^-4".format(p[0]))
+
+        self.updateFrogResultPlot()
 
     def updateImageThreshold(self):
         h = self.frogImageWidget.getHistogramWidget()
         levels = h.item.getLevels()
         root.debug('Levels: ' + str(levels))
-        root.debug('scanData.max() ' + str(self.scanData.max()))
-        self.frogThresholdSpinbox.setValue(levels[0] / self.scanData.max())
+        root.debug('frogRawData.max() ' + str(self.frogRawData.max()))
+        self.frogThresholdSpinbox.setValue(levels[0] / self.frogRawData.max())
         self.updateFrogRoi()
 
     def updateFrogRoi(self):
         root.debug(''.join(('Roi pos: ', str(self.frogRoi.pos()))))
         root.debug(''.join(('Roi size: ', str(self.frogRoi.size()))))
-        if self.scanData.size != 0:
-            root.debug(''.join(('Scan data: ', str(self.scanData.shape))))
+        if self.frogRawData.size != 0:
+            root.debug(''.join(('Raw data: ', str(self.frogRawData.shape))))
 
-            bkg = self.scanData[0, :]
-            bkgImg = self.scanData - np.tile(bkg, (self.scanData.shape[0], 1))
+            bkg = self.frogRawData[0, :]
+            bkgImg = self.frogRawData - np.tile(bkg, (self.frogRawData.shape[0], 1))
             x0, y0 = self.frogRoi.pos()
             x1, y1 = self.frogRoi.size()
             x1 += x0
             y1 += y0
-            dx = self.wavelengths[1] - self.wavelengths[0]
-            dy = (self.timeData[-1] - self.timeData[0]) / self.timeData.shape[0]
-            x0_ind = np.maximum(np.int((x0 - self.wavelengths[0])/dx), 0)
-            x1_ind = np.minimum(np.int((x1 - self.wavelengths[0]) / dx), self.wavelengths.shape[0]-1)
-            y0_ind = np.maximum(np.int((y0 - self.timeData[0]) / dy), 0)
-            y1_ind = np.minimum(np.int((y1 - self.timeData[0]) / dy), self.timeData.shape[0]-1)
+            dx = self.frogWavelengths[1] - self.frogWavelengths[0]
+            dy = (self.frogTimeData[-1] - self.frogTimeData[0]) / self.frogTimeData.shape[0]
+            x0_ind = np.maximum(np.int((x0 - self.frogWavelengths[0]) / dx), 0)
+            x1_ind = np.minimum(np.int((x1 - self.frogWavelengths[0]) / dx), self.frogWavelengths.shape[0] - 1)
+            y0_ind = np.maximum(np.int((y0 - self.frogTimeData[0]) / dy), 0)
+            y1_ind = np.minimum(np.int((y1 - self.frogTimeData[0]) / dy), self.frogTimeData.shape[0] - 1)
             root.debug('x0_ind ' + str(x0_ind))
             root.debug('x1_ind ' + str(x1_ind))
             root.debug('y0_ind ' + str(y0_ind))
@@ -420,29 +437,30 @@ class TangoDeviceClient(QtGui.QWidget):
             dt_est = self.estimateFrogDt(self.frogNSpinbox.value(), y1 - y0, x0, x1)
             self.frogDtLabel.setText('dt (fs) [{0:.1f} - {1:.1f}]'.format(dt_est[0]*1e15, dt_est[1]*1e15))
             root.debug('Slice complete')
-            thr = np.maximum(self.frogThresholdSpinbox.value() - bkg.mean() / self.scanData.max(), 0)
+            thr = np.maximum(self.frogThresholdSpinbox.value() - bkg.mean() / self.frogRawData.max(), 0)
             root.debug('Threshold: ' + str(thr))
-            kernel = self.frogKernelSpinbox.value()
+            kernel = self.frogKernelMedianSpinbox.value()
             root.debug('Starting medfilt...')
             filteredImg = medfilt2d(roiImg, kernel) - thr
+            filteredImg = gaussian_filter(filteredImg, self.frogKernelGaussianSpinbox.value())
             #             filteredImg = roiImg - thr
             root.debug('Filtering complete')
             filteredImg[filteredImg < 0.0] = 0.0
-            self.filteredImg = filteredImg
+            self.frogFilteredData = filteredImg
             root.debug('Threshold complete')
-            x0, x1 = (self.wavelengths[0], self.wavelengths[-1])
-            y0, y1 = (self.timeData[0], self.timeData[-1])
-            xscale, yscale = (x1 - x0) / self.wavelengths.shape[0], (y1 - y0) / self.timeData.shape[0]
+            x0, x1 = (self.frogWavelengths[0], self.frogWavelengths[-1])
+            y0, y1 = (self.frogTimeData[0], self.frogTimeData[-1])
+            xscale, yscale = (x1 - x0) / self.frogWavelengths.shape[0], (y1 - y0) / self.frogTimeData.shape[0]
             self.frogRoiImageWidget.setImage(filteredImg.transpose(), scale=[xscale, yscale], pos=[x0, y0])
             root.debug('Set image complete')
             self.frogRoiImageWidget.autoRange()
             root.debug('Autorange complete')
 
     def fitFrogRoi(self):
-        x0 = self.wavelengths[0]
-        y0 = self.timeData[0]
-        dx = self.wavelengths[-1] - self.wavelengths[0]
-        dy = (self.timeData[-1] - self.timeData[0])
+        x0 = self.frogWavelengths[0]
+        y0 = self.frogTimeData[0]
+        dx = self.frogWavelengths[-1] - self.frogWavelengths[0]
+        dy = (self.frogTimeData[-1] - self.frogTimeData[0])
         self.frogRoi.setPos([x0, y0], finish=False, update=False)
         self.frogRoi.setSize([dx, dy])
         root.debug(''.join(('Roi pos: ', str(x0), 'm x ', str(y0), 's')))
@@ -473,34 +491,33 @@ class TangoDeviceClient(QtGui.QWidget):
         return dt_t, dt_l
 
     def startFrogInversion(self):
-        data = np.uint8(self.scanDataRoi)
         N = self.frogNSpinbox.value()
         # frogImg = self.frogRoiImageWidget.getImageItem().image.transpose()
-        frogImg = self.filteredImg
+        frogImg = self.frogFilteredData
         if frogImg.size > 0:
             x0, y0 = self.frogRoi.pos()
             x1, y1 = self.frogRoi.size()
             x1 += x0
             y1 += y0
-            dx = self.wavelengths[1] - self.wavelengths[0]
-            dy = (self.timeData[-1] - self.timeData[0]) / self.timeData.shape[0]
-            x0_ind = np.maximum(np.int((x0 - self.wavelengths[0]) / dx), 0)
-            x1_ind = np.minimum(np.int((x1 - self.wavelengths[0]) / dx), self.wavelengths.shape[0]-1)
-            y0_ind = np.maximum(np.int((y0 - self.timeData[0]) / dy), 0)
-            y1_ind = np.minimum(np.int((y1 - self.timeData[0]) / dy), self.timeData.shape[0]-1)
+            dx = self.frogWavelengths[1] - self.frogWavelengths[0]
+            dy = (self.frogTimeData[-1] - self.frogTimeData[0]) / self.frogTimeData.shape[0]
+            x0_ind = np.maximum(np.int((x0 - self.frogWavelengths[0]) / dx), 0)
+            x1_ind = np.minimum(np.int((x1 - self.frogWavelengths[0]) / dx), self.frogWavelengths.shape[0] - 1)
+            y0_ind = np.maximum(np.int((y0 - self.frogTimeData[0]) / dy), 0)
+            y1_ind = np.minimum(np.int((y1 - self.frogTimeData[0]) / dy), self.frogTimeData.shape[0] - 1)
 
             # lStartInd = np.int(self.frogRoi.pos()[0])
             # lStopInd = np.int(self.frogRoi.pos()[0] + np.ceil(self.frogRoi.size()[0]))
             lStartInd = x0_ind
             lStopInd = x1_ind
-            root.debug(''.join(('Wavelength range: ', str(self.wavelengths[lStartInd]), ' - ',
-                       str(self.wavelengths[lStopInd]))))
-            if self.wavelengths[lStartInd] > 1:
-                l_start = self.wavelengths[lStartInd] * 1e-9
-                l_stop = self.wavelengths[lStopInd] * 1e-9
+            root.debug(''.join(('Wavelength range: ', str(self.frogWavelengths[lStartInd]), ' - ',
+                                str(self.frogWavelengths[lStopInd]))))
+            if self.frogWavelengths[lStartInd] > 1:
+                l_start = self.frogWavelengths[lStartInd] * 1e-9
+                l_stop = self.frogWavelengths[lStopInd] * 1e-9
             else:
-                l_start = self.wavelengths[lStartInd]
-                l_stop = self.wavelengths[lStopInd]
+                l_start = self.frogWavelengths[lStartInd]
+                l_stop = self.frogWavelengths[lStopInd]
             l0 = (l_stop + l_start) / 2
 
             # tStartInd = np.int(self.frogRoi.pos()[1])
@@ -508,11 +525,11 @@ class TangoDeviceClient(QtGui.QWidget):
             tStartInd = y0_ind
             tStopInd = y1_ind
 
-            root.debug(''.join(('Time range: ', str(self.timeData[tStartInd]), ' - ', str(self.timeData[tStopInd]))))
-            tau_mean = (self.timeData[tStartInd] + self.timeData[tStopInd]) / 2
-            tau_start = self.timeData[tStartInd] - tau_mean
-            tau_stop = self.timeData[tStopInd] - tau_mean
-            if self.timeData.shape != 0:
+            root.debug(''.join(('Time range: ', str(self.frogTimeData[tStartInd]), ' - ', str(self.frogTimeData[tStopInd]))))
+            tau_mean = (self.frogTimeData[tStartInd] + self.frogTimeData[tStopInd]) / 2
+            tau_start = self.frogTimeData[tStartInd] - tau_mean
+            tau_stop = self.frogTimeData[tStopInd] - tau_mean
+            if self.frogTimeData.shape != 0:
                 dt = self.frogDtSpinbox.value() * 1e-15
             else:
                 dt = 1e-15
@@ -550,15 +567,6 @@ class TangoDeviceClient(QtGui.QWidget):
             self.frogErrorPlot.setData(self.frogCalc.G_hist)
             self.frogErrorPlot.update()
 
-            t = self.frogCalc.get_t()
-            Et = self.frogCalc.get_trace_abs()
-            Ephi = self.frogCalc.get_trace_phase(linear_comp=True)
-
-            self.frogResultPlotAbs.setData(x=t, y=Et)
-            self.frogResultPlotAbs.update()
-            self.frogResultPlotPhase.setData(x=t, y=Ephi)
-            self.frogResultPlotPhase.update()
-
             self.frogCalcResultImageWidget.setImage(np.transpose(np.abs(self.frogCalc.Esig_w_tau) ** 2))
             self.frogCalcResultImageWidget.autoRange()
             self.frogCalcResultImageWidget.update()
@@ -582,20 +590,36 @@ class TangoDeviceClient(QtGui.QWidget):
         root.debug(''.join(('Time data: ', str(tData.shape), ' ', str(tData[0]))))
         root.debug(''.join(('l data: ', str(lData.shape), ' ', str(lData[0]))))
 
-        self.scanData = pic
-        self.timeData = tData
-        self.wavelengths = lData
-        self.centerWavelengthSpinbox.setValue(1e9*lData.mean())
+        self.frogRawData = pic
+        self.frogTimeData = tData
+        self.frogWavelengths = lData
+        self.frogCentralWavelength = 1e9*lData.mean()
 
-        x0, x1 = (self.wavelengths[0], self.wavelengths[-1])
-        y0, y1 = (self.timeData[0], self.timeData[-1])
-        xscale, yscale = (x1 - x0) / self.wavelengths.shape[0], (y1 - y0) / self.timeData.shape[0]
+        x0, x1 = (self.frogWavelengths[0], self.frogWavelengths[-1])
+        y0, y1 = (self.frogTimeData[0], self.frogTimeData[-1])
+        xscale, yscale = (x1 - x0) / self.frogWavelengths.shape[0], (y1 - y0) / self.frogTimeData.shape[0]
         self.frogImageWidget.setImage(np.transpose(pic), scale=[xscale, yscale], pos=[x0, y0])
         self.frogImageWidget.autoLevels()
         self.frogImageWidget.autoRange()
         self.fitFrogRoi()
         # self.updateFrogRoi()
         self.traceSourceLabel.setText(fNameRoot.split('/')[-1])
+
+    def loadScandataToFrog(self):
+        self.frogRawData = self.scanData
+        self.frogTimeData = self.scanTimeData
+        self.frogWavelengths = self.scanWavelengths
+        self.frogCentralWavelength = self.centerWavelengthSpinbox.value()
+
+        x0, x1 = (self.frogWavelengths[0], self.frogWavelengths[-1])
+        y0, y1 = (self.frogTimeData[0], self.frogTimeData[-1])
+        xscale, yscale = (x1 - x0) / self.frogWavelengths.shape[0], (y1 - y0) / self.frogTimeData.shape[0]
+        self.frogImageWidget.setImage(np.transpose(self.frogRawData), scale=[xscale, yscale], pos=[x0, y0])
+        self.frogImageWidget.autoLevels()
+        self.frogImageWidget.autoRange()
+        self.fitFrogRoi()
+        # self.updateFrogRoi()
+        self.traceSourceLabel.setText("Scan")
 
     def tabChanged(self, i):
         root.debug(''.join(('Tab changed: ', str(i))))
@@ -617,7 +641,7 @@ class TangoDeviceClient(QtGui.QWidget):
         if i == 0 or i == 1:
             self.plotLayout.addWidget(self.spectrumImageWidget)
             self.plotLayout.addWidget(self.spectrumPlotWidget)
-            self.frogLayout.addWidget(self.frogImageWidget)
+            self.frogLayout.addWidget(self.scanImageWidget)
             #             self.invisibleLayout.addWidget(self.plotWidget2)
             #             self.invisibleLayout.addWidget(self.plotWidget)
             self.frogLayout.addWidget(self.timemarginalPlotWidget)
@@ -625,18 +649,28 @@ class TangoDeviceClient(QtGui.QWidget):
             self.timemarginalPlotWidget.setVisible(True)
             self.spectrumPlotWidget.setVisible(True)
             self.spectrumImageWidget.setVisible(True)
+            self.scanImageWidget.setVisible(True)
+            self.scanImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
             self.frogErrorWidget.setVisible(False)
             self.frogResultWidget.setVisible(False)
+            self.frogImageWidget.setVisible(False)
             self.frogRoiImageWidget.setVisible(False)
             self.frogCalcImageWidget.setVisible(False)
             self.frogCalcResultImageWidget.setVisible(False)
             self.frogRoi.setVisible(False)
+
+            self.attributes['image'].unpause_read()
+            self.attributes['position'].unpause_read()
+            self.attributes['speed'].unpause_read()
+
         elif i == 2:
             self.timemarginalPlotWidget.setVisible(False)
             self.spectrumPlotWidget.setVisible(False)
             self.spectrumImageWidget.setVisible(False)
+            self.scanImageWidget.setVisible(False)
             self.frogErrorWidget.setVisible(True)
             self.frogRoiImageWidget.setVisible(True)
+            self.frogImageWidget.setVisible(True)
             self.frogRoi.setVisible(True)
             self.frogResultWidget.setVisible(True)
             self.frogCalcImageWidget.setVisible(True)
@@ -660,12 +694,16 @@ class TangoDeviceClient(QtGui.QWidget):
             self.plotLayout.addWidget(self.frogResultWidget)
             self.plotLayout.setStretchFactor(self.frogResultWidget, 3)
 
+            self.attributes['image'].pause_read()
+            self.attributes['position'].pause_read()
+            self.attributes['speed'].pause_read()
+
     def closeEvent(self, event):
         for a in self.attributes.itervalues():
             root.debug('Stopping' + str(a.name))
-            a.stopRead()
+            a.stop_read()
         for a in self.attributes.itervalues():
-            a.readThread.join()
+            a.read_thread.join()
 
         self.settings.setValue('startPos', self.startPosSpinbox.value())
         self.settings.setValue('setPos', self.setPosSpinbox.value())
@@ -694,11 +732,13 @@ class TangoDeviceClient(QtGui.QWidget):
         self.settings.setValue('frogMethod', np.int(self.frogMethodCombobox.currentIndex()))
         self.settings.setValue('frogDt', np.float(self.frogDtSpinbox.value()))
         self.settings.setValue('frogThreshold', np.float(self.frogThresholdSpinbox.value()))
-        self.settings.setValue('frogKernel', np.int(self.frogKernelSpinbox.value()))
+        self.settings.setValue('frogKernel', np.int(self.frogKernelMedianSpinbox.value()))
+        self.settings.setValue('frogKernelGaussian', np.int(self.frogKernelGaussianSpinbox.value()))
         self.settings.setValue('frogRoiPosX', np.float(self.frogRoi.pos()[0]))
         self.settings.setValue('frogRoiPosY', np.float(self.frogRoi.pos()[1]))
         self.settings.setValue('frogRoiSizeW', np.float(self.frogRoi.size()[0]))
         self.settings.setValue('frogRoiSizeH', np.float(self.frogRoi.size()[1]))
+        self.settings.setValue('frogTemporalSpectral', np.int(self.frogTemporalSpectralCombobox.currentIndex()))
 
         self.settings.sync()
         event.accept()
@@ -745,18 +785,26 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogDtSpinbox.setSingleStep(1.0)
         self.frogDtSpinbox.setDecimals(1)
         self.frogDtSpinbox.setValue(self.settings.value('frogDt', 1.0).toDouble()[0])
-        self.frogKernelSpinbox = QtGui.QSpinBox()
-        self.frogKernelSpinbox.setMinimum(1)
-        self.frogKernelSpinbox.setMaximum(99)
-        self.frogKernelSpinbox.setSingleStep(2)
-        self.frogKernelSpinbox.setValue(self.settings.value('frogKernel', 3).toInt()[0])
-        self.frogKernelSpinbox.editingFinished.connect(self.updateFrogRoi)
+        self.frogKernelMedianSpinbox = QtGui.QSpinBox()
+        self.frogKernelMedianSpinbox.setMinimum(1)
+        self.frogKernelMedianSpinbox.setMaximum(99)
+        self.frogKernelMedianSpinbox.setSingleStep(2)
+        self.frogKernelMedianSpinbox.setValue(self.settings.value('frogKernel', 3).toInt()[0])
+        self.frogKernelMedianSpinbox.editingFinished.connect(self.updateFrogRoi)
+        self.frogKernelGaussianSpinbox = QtGui.QSpinBox()
+        self.frogKernelGaussianSpinbox.setMinimum(1)
+        self.frogKernelGaussianSpinbox.setMaximum(99)
+        self.frogKernelGaussianSpinbox.setSingleStep(2)
+        self.frogKernelGaussianSpinbox.setValue(self.settings.value('frogKernelGaussian', 3).toInt()[0])
+        self.frogKernelGaussianSpinbox.editingFinished.connect(self.updateFrogRoi)
         self.traceSourceLabel = QtGui.QLabel('Scan')
         self.traceSourceLabel.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Fixed)
         self.traceSourceLabel.setMaximumWidth(250)
         self.traceSourceLabel.setMinimumWidth(250)
         self.frogLoadButton = QtGui.QPushButton('Load')
         self.frogLoadButton.clicked.connect(self.loadFrogTrace)
+        self.frogUseScanButton = QtGui.QPushButton('Scan data')
+        self.frogUseScanButton.clicked.connect(self.loadScandataToFrog)
 
         self.frogEtCheckbox = QtGui.QCheckBox()
         self.frogEtCheckbox.setChecked(True)
@@ -766,18 +814,29 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogPhaseCheckbox.stateChanged.connect(self.updateFrogResultPlot)
 
         self.frogEtFWHMLabel = QtGui.QLabel()
-        self.frogEtRMSLabel = QtGui.QLabel()
         self.frogEtPhaseLabel = QtGui.QLabel()
+
+        self.frogTemporalSpectralCombobox = QtGui.QComboBox()
+        self.frogTemporalSpectralCombobox.addItem('Temporal')
+        self.frogTemporalSpectralCombobox.addItem('Spectral')
+        self.frogTemporalSpectralCombobox.setCurrentIndex(self.settings.value('frogMethod', 0).toInt()[0])
+        self.frogTemporalSpectralCombobox.currentIndexChanged.connect(self.updateExpansionCoefficients)
+        self.frogExpansion1 = QtGui.QLabel()
+        self.frogExpansion2 = QtGui.QLabel()
+        self.frogExpansion3 = QtGui.QLabel()
+        self.frogExpansion4 = QtGui.QLabel()
 
         self.frogGridLayout1 = QtGui.QGridLayout()
         self.frogGridLayout1.addWidget(QtGui.QLabel("Image threshold"), 0, 0)
         self.frogGridLayout1.addWidget(self.frogThresholdSpinbox, 0, 1)
         self.frogGridLayout1.addWidget(QtGui.QLabel("Median kernel"), 1, 0)
-        self.frogGridLayout1.addWidget(self.frogKernelSpinbox, 1, 1)
+        self.frogGridLayout1.addWidget(self.frogKernelMedianSpinbox, 1, 1)
+        self.frogGridLayout1.addWidget(QtGui.QLabel("Gaussian kernel"), 2, 0)
+        self.frogGridLayout1.addWidget(self.frogKernelGaussianSpinbox, 2, 1)
         self.frogGridLayout1.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding),
-                                     2, 0)
-        self.frogGridLayout1.addWidget(QtGui.QLabel("Fit ROI to data"), 3, 0)
-        self.frogGridLayout1.addWidget(self.frogFitRoiButton, 3, 1)
+                                     3, 0)
+        self.frogGridLayout1.addWidget(QtGui.QLabel("Fit ROI to data"), 4, 0)
+        self.frogGridLayout1.addWidget(self.frogFitRoiButton, 4, 1)
 
         self.frogGridLayout2 = QtGui.QGridLayout()
         self.frogGridLayout2.addWidget(QtGui.QLabel("Frog algorithm"), 0, 0)
@@ -796,29 +855,42 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogGridLayout3.addWidget(self.traceSourceLabel, 0, 1, 1, 2)
         self.frogGridLayout3.addWidget(QtGui.QLabel("Load trace"), 1, 0)
         self.frogGridLayout3.addWidget(self.frogLoadButton, 1, 1)
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Load scan data"), 2, 0)
+        self.frogGridLayout3.addWidget(self.frogUseScanButton, 2, 1)
         self.frogGridLayout3.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding),
-                                     2, 0)
-        self.frogGridLayout3.addWidget(QtGui.QLabel("Iterations"), 3, 0)
-        self.frogGridLayout3.addWidget(self.frogIterationsSpinbox, 3, 1)
-        self.frogGridLayout3.addWidget(QtGui.QLabel("Invert trace"), 4, 0)
-        self.frogGridLayout3.addWidget(self.frogStartButton, 4, 1)
-        self.frogGridLayout3.addWidget(self.frogContinueButton, 5, 1)
+                                     3, 0)
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Iterations"), 4, 0)
+        self.frogGridLayout3.addWidget(self.frogIterationsSpinbox, 4, 1)
+        self.frogGridLayout3.addWidget(QtGui.QLabel("Invert trace"), 5, 0)
+        self.frogGridLayout3.addWidget(self.frogStartButton, 5, 1)
+        self.frogGridLayout3.addWidget(self.frogContinueButton, 6, 1)
 
         self.frogGridLayout4 = QtGui.QGridLayout()
-        self.frogGridLayout4.addWidget(QtGui.QLabel("Show Et"), 0, 0)
-        self.frogGridLayout4.addWidget(self.frogEtCheckbox, 0, 1)
-        self.frogGridLayout4.addWidget(QtGui.QLabel("Show phase"), 1, 0)
-        self.frogGridLayout4.addWidget(self.frogPhaseCheckbox, 1, 1)
-        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum), 2,
+        self.frogGridLayout4.addWidget(QtGui.QLabel("Plot type"), 0, 0)
+        self.frogGridLayout4.addWidget(self.frogTemporalSpectralCombobox, 0, 1)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("Show intensity"), 1, 0)
+        self.frogGridLayout4.addWidget(self.frogEtCheckbox, 1, 1)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("Show phase"), 2, 0)
+        self.frogGridLayout4.addWidget(self.frogPhaseCheckbox, 2, 1)
+        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum), 3,
                                      0)
-        self.frogGridLayout4.addWidget(QtGui.QLabel("t_FWHM (intensity)"), 3, 0)
-        self.frogGridLayout4.addWidget(self.frogEtFWHMLabel, 3, 1)
-        self.frogGridLayout4.addWidget(QtGui.QLabel("t_RMS (intensity)"), 4, 0)
-        self.frogGridLayout4.addWidget(self.frogEtRMSLabel, 4, 1)
+        self.frogGridLayout4.addWidget(QtGui.QLabel("t_FWHM (intensity)"), 4, 0)
+        self.frogGridLayout4.addWidget(self.frogEtFWHMLabel, 4, 1)
         self.frogGridLayout4.addWidget(QtGui.QLabel("Phase diff"), 5, 0)
         self.frogGridLayout4.addWidget(self.frogEtPhaseLabel, 5, 1)
-        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding),
-                                     6, 0)
+        self.frogGridLayout4.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Expanding),
+                                     6, 0, 1, 2)
+
+        self.frogGridLayout5 = QtGui.QGridLayout()
+        self.frogGridLayout5.addWidget(QtGui.QLabel("Phase expansion"), 0, 0)
+        self.frogGridLayout5.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum), 1,
+                                     0)
+        self.frogGridLayout5.addWidget(self.frogExpansion1, 2, 0, 1, 2)
+        self.frogGridLayout5.addWidget(self.frogExpansion2, 3, 0, 1, 2)
+        self.frogGridLayout5.addWidget(self.frogExpansion3, 4, 0, 1, 2)
+        self.frogGridLayout5.addWidget(self.frogExpansion4, 5, 0, 1, 2)
+        self.frogGridLayout5.addItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Expanding),
+                                     6, 0, 1, 2)
 
         # Error plot widget
         self.frogErrorWidget = pq.PlotWidget(useOpenGL=True)
@@ -856,6 +928,7 @@ class TangoDeviceClient(QtGui.QWidget):
         # Raw frog trace with roi selector
         plt1 = pq.PlotItem(labels={'bottom': ('Spectrum', 'm'), 'left': ('Time delay', 's')})
         self.frogImageWidget = pq.ImageView(view=plt1)
+        self.frogImageWidget.ui.histogram.gradient.loadPreset('thermalclip')
         self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
         self.frogImageWidget.getView().setAspectLocked(False)
         h = self.frogImageWidget.getHistogramWidget()
@@ -885,17 +958,24 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogRoiImageWidget = pq.ImageView(view=plt2)
         self.frogRoiImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
         self.frogRoiImageWidget.getView().setAspectLocked(False)
+        pos = np.array([0.0, 0.0001, 1.0])
+        colors = np.array([[0, 0, 50, 255], [0, 0, 0, 255], [255, 255, 255, 255]], dtype=np.ubyte)
+        colormap = pq.ColorMap(pos, colors)
+        # self.frogRoiImageWidget.ui.histogram.gradient.setColorMap(colormap)
+        self.frogRoiImageWidget.ui.histogram.gradient.loadPreset('thermalclip')
 
         plt3 = pq.PlotItem(labels={'bottom': ('Frequency', 'px'), 'left': ('Time delay', 'px')})
         self.frogCalcImageWidget = pq.ImageView(view=plt3)
         self.frogCalcImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
         self.frogCalcImageWidget.getView().setAspectLocked(False)
+        self.frogCalcImageWidget.ui.histogram.gradient.loadPreset('thermalclip')
         plt4 = pq.PlotItem(labels={'bottom': ('Frequency', 'px'), 'left': ('Time delay', 'px')})
         self.frogCalcResultImageWidget = pq.ImageView(view=plt4)
         self.frogCalcResultImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
         self.frogCalcResultImageWidget.getView().setAspectLocked(False)
         self.frogCalcResultImageWidget.view.setXLink(self.frogCalcImageWidget.view)
         self.frogCalcResultImageWidget.view.setYLink(self.frogCalcImageWidget.view)
+        self.frogCalcResultImageWidget.ui.histogram.gradient.loadPreset('thermalclip')
 
         self.frogLayout2 = QtGui.QVBoxLayout()
 
@@ -925,12 +1005,15 @@ class TangoDeviceClient(QtGui.QWidget):
         self.startPosSpinbox.setMinimum(-2000000)
         self.startPosSpinbox.setSuffix(" mm")
         self.startPosSpinbox.setValue(self.settings.value('startPos', 0.0).toDouble()[0])
+        self.stepSizeLabel = QtGui.QLabel("Step size")
         self.stepSizeSpinbox = QtGui.QDoubleSpinBox()
         self.stepSizeSpinbox.setDecimals(4)
         self.stepSizeSpinbox.setMaximum(2000000)
         self.stepSizeSpinbox.setMinimum(-2000000)
         self.stepSizeSpinbox.setSuffix(" mm")
+        self.stepSizeSpinbox.editingFinished.connect(self.setStepSize)
         self.stepSizeSpinbox.setValue(self.settings.value('step', 0.05).toDouble()[0])
+        self.setStepSize()
         self.setPosSpinbox = QtGui.QDoubleSpinBox()
         self.setPosSpinbox.setDecimals(3)
         self.setPosSpinbox.setMaximum(2000000)
@@ -980,7 +1063,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.normalizePumpCheck = QtGui.QCheckBox('Normalize')
         self.timeUnitsRadio = QtGui.QRadioButton('ps')
         self.posUnitsRadio = QtGui.QRadioButton('mm')
-        if self.settings.value('xUnitTime', True).toBool() == True:
+        if self.settings.value('xUnitTime', True).toBool() is True:
             self.timeUnitsRadio.setChecked(True)
         else:
             self.posUnitsRadio.setChecked(True)
@@ -995,20 +1078,24 @@ class TangoDeviceClient(QtGui.QWidget):
 
         self.gridLayout1.addWidget(QtGui.QLabel("Start position"), 0, 0)
         self.gridLayout1.addWidget(self.startPosSpinbox, 0, 1)
-        self.gridLayout1.addWidget(QtGui.QLabel("Step size"), 1, 0)
+        self.gridLayout1.addWidget(self.stepSizeLabel, 1, 0)
         self.gridLayout1.addWidget(self.stepSizeSpinbox, 1, 1)
         self.gridLayout1.addWidget(QtGui.QLabel("Averages"), 2, 0)
         self.gridLayout1.addWidget(self.averageSpinbox, 2, 1)
         self.gridLayout1.addWidget(QtGui.QLabel("Normalize"), 3, 0)
         self.gridLayout1.addWidget(self.normalizePumpCheck, 3, 1)
+        self.gridLayout1.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
+                                                         QtGui.QSizePolicy.MinimumExpanding), 4, 0)
         self.gridLayout2.addWidget(QtGui.QLabel("Set position"), 0, 0)
         self.gridLayout2.addWidget(self.setPosSpinbox, 0, 1)
-        self.gridLayout2.addWidget(QtGui.QLabel("Start scan"), 1, 0)
-        self.gridLayout2.addWidget(self.startButton, 1, 1)
-        self.gridLayout2.addWidget(QtGui.QLabel("Stop scan"), 2, 0)
-        self.gridLayout2.addWidget(self.stopButton, 2, 1)
-        self.gridLayout2.addWidget(QtGui.QLabel("Export scan"), 3, 0)
-        self.gridLayout2.addWidget(self.exportButton, 3, 1)
+        self.gridLayout2.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
+                                                         QtGui.QSizePolicy.MinimumExpanding), 1, 0)
+        self.gridLayout2.addWidget(QtGui.QLabel("Start scan"), 2, 0)
+        self.gridLayout2.addWidget(self.startButton, 2, 1)
+        self.gridLayout2.addWidget(QtGui.QLabel("Stop scan"), 3, 0)
+        self.gridLayout2.addWidget(self.stopButton, 3, 1)
+        self.gridLayout2.addWidget(QtGui.QLabel("Export scan"), 4, 0)
+        self.gridLayout2.addWidget(self.exportButton, 4, 1)
         self.gridLayout3.addWidget(currentPosTextLabel, 0, 0)
         self.gridLayout3.addWidget(self.currentPosLabel, 0, 1)
         self.gridLayout3.addWidget(QtGui.QLabel("Current speed"), 1, 0)
@@ -1027,9 +1114,7 @@ class TangoDeviceClient(QtGui.QWidget):
         root.debug('Plot widgets')
 
         self.spectrumImageWidget = pq.ImageView()
-        gradEditor = pq.GradientEditorItem()
-        gradEditor.loadPreset('flame')
-        self.spectrumImageWidget.ui.histogram.setColorMap = gradEditor.colorMap()
+        self.spectrumImageWidget.ui.histogram.gradient.loadPreset('thermal')
         self.ROI = pq.RectROI([0, 300], [600, 20], pen=(0, 9))
         self.ROI.sigRegionChanged.connect(self.generateWavelengths)
         self.ROI.blockSignals(True)
@@ -1059,6 +1144,11 @@ class TangoDeviceClient(QtGui.QWidget):
         self.spectrumPlotWidget.setMinimumWidth(200)
         self.spectrumPlotWidget.setMaximumWidth(500)
         self.spectrumPlotWidget.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding)
+
+        self.scanImageWidget = pq.ImageView()
+        self.scanImageWidget.ui.histogram.gradient.loadPreset('thermal')
+        self.scanImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.scanImageWidget.getView().setAspectLocked(False)
 
         self.timemarginalPlotWidget = pq.PlotWidget(useOpenGL=True, labels={'bottom': ('Time delay', 's')})
         self.plot3 = self.timemarginalPlotWidget.plot()
@@ -1096,6 +1186,8 @@ class TangoDeviceClient(QtGui.QWidget):
         self.camGridLayout1.addWidget(QtGui.QLabel("Gain"), 3, 0)
         self.camGridLayout1.addWidget(self.gainSpinbox, 3, 1)
         self.camGridLayout1.addWidget(self.gainLabel, 3, 2)
+        self.camGridLayout1.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
+                                                            QtGui.QSizePolicy.MinimumExpanding), 4, 0)
         cameraLay.addLayout(self.camGridLayout1)
         cameraLay.addSpacerItem(
             QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
@@ -1103,7 +1195,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.setupFrogLayout()
 
         self.frogLayout = QtGui.QVBoxLayout()
-        self.frogLayout.addWidget(self.frogImageWidget)
+        self.frogLayout.addWidget(self.scanImageWidget)
         self.frogLayout.addWidget(self.timemarginalPlotWidget)
         self.plotLayout.addLayout(self.frogLayout)
 
@@ -1117,6 +1209,8 @@ class TangoDeviceClient(QtGui.QWidget):
         frogLay.addWidget(self.frogErrorWidget)
         frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
         frogLay.addLayout(self.frogGridLayout4)
+        frogLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
+        frogLay.addLayout(self.frogGridLayout5)
         frogLay.addSpacerItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
 
         self.tabCameraWidget = QtGui.QWidget()

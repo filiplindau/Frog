@@ -35,13 +35,10 @@ root.setLevel(logging.DEBUG)
 
 class FrogCalculation(object):
     def __init__(self):
-        self.roll_fft = False
 
-        self.dtype_c = np.complex64
-        self.dtype_r = np.float32
+        self.dtype_c = np.complex64     # datatype for complex values
+        self.dtype_r = np.float32       # datatype for real values
 
-        self.Esignal_w = None
-        self.Esignal_t = None
         self.dw = None      # Frequency resolution for frog trace
         self.w = None       # Frequency vector for frog trace
         self.w0 = None      # Central frequency for frog trace
@@ -59,9 +56,11 @@ class FrogCalculation(object):
         self.Esig_w_tau = None      # FROG signal electric field vs frequency and time shift tau
         self.Esig_w_tau_p = None    # FROG signal electric field vs frequency and time shift after intensity projection
         self.Esig_t_tau_p = None    # FROG signal electric field vs time and time shift after intensity projection
-        self.dZ = None
-        self.alpha = []
-        self.G_hist = []
+        self.dZ = None              # Gradient of the functional distance Z
+        self.alpha = []             # List recording of the distance moved in the dZ direction each iteration
+        self.G_hist = []            # List recording of the reconstruction error each iteration
+
+        self.phase_thr = 0.01        # Threshold amplitude for phase information methods (get_phase etc.)
 
     def init_pulsefield_random(self, n_t, t_res, l_center, tau_pulse=100e-15, seed=0):
         """ Initiate signal field with parameters:
@@ -166,6 +165,11 @@ class FrogCalculation(object):
         root.info('Finished')
 
     def init_shiftind(self, n_t):
+        """
+        Generate shiftind matrixes for time shifting operations
+        :param n_t:
+        :return:
+        """
         i = np.arange(n_t * n_t)
         i2 = np.arange(n_t).repeat(n_t)
 
@@ -173,26 +177,22 @@ class FrogCalculation(object):
         self.shiftinds_neg = (i + i2 - n_t / 2) % n_t + i2 * n_t
         self.shiftinds_pos = (-n_t / 2 + i - i2) % n_t + i2 * n_t
 
-    def load_frog_trace(self, filename, thr=0.0, l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1):
-        f_name_root = '_'.join((filename.split('_')[0:3]))
-        t_data = np.loadtxt(''.join((f_name_root, '_timevector.txt')))
-        t_data = t_data - t_data.mean()
-        l_data = np.loadtxt(''.join((f_name_root, '_wavelengthvector.txt'))) * 1e-9
-        pic = np.float32(imread(''.join((f_name_root, '_image.png'))))
-        pic_n = pic / pic.max()
-
-        if t_stop_pixel == -1:
-            t_stop_pixel = pic_n.shape[0] - 1
-        if l_stop_pixel == -1:
-            l_stop_pixel = pic_n.shape[1] - 1
-
-        picF = self.filter_frog_trace(pic_n, 3, thr)
-
-        self.condition_frog_trace(picF[t_start_pixel:t_stop_pixel, l_start_pixel:l_stop_pixel],
-                                  l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
-                                  t_data[t_stop_pixel], thr)
-
     def load_frog_trace2(self, filename, thr=0.0, l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1):
+        """
+        Load a frog trace image from file and condition it to the internal w, tau grid (by calling
+        condition_frog_trace). The variables self.w and self.tau must be set up first (be e.g. calling
+        one of the init_pulsefield functions). The method needs three files: the image png filename_image.png
+        (with time delay as the first dimension), _timevector.txt (time delay for each row in the image), and
+        _wavelengthvector.txt (wavelength for each column in the image)
+
+        :param filename: Filename of the image file, ending in _image.png
+        :param thr:
+        :param l_start_pixel:
+        :param l_stop_pixel:
+        :param t_start_pixel:
+        :param t_stop_pixel:
+        :return:
+        """
         f_name_root = '_'.join((filename.split('_')[:-1]))
         root.debug(f_name_root)
         t_data = np.loadtxt(''.join((f_name_root, '_timevector.txt')))
@@ -212,77 +212,9 @@ class FrogCalculation(object):
 
         self.condition_frog_trace2(picF[t_start_pixel:t_stop_pixel, l_start_pixel:l_stop_pixel],
                                   l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
-                                  t_data[t_stop_pixel], self.Et.shape[0], thr)
+                                  t_data[t_stop_pixel], self.Et.shape[0], thr, False)
 
-    def condition_frog_trace(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15):
-        """ Take the measured intensity data and interpolate it to the
-        internal w, tau grid. The variables self.w and self.tau must be set up
-        first (be e.g. calling one of the init_pulsefield functions).
-
-        Idata.shape[0] = number of tau points
-        Idata.shape[1] = number of spectrum points
-        """
-        # Setup trace frequency and time parameters
-        tau_data = np.linspace(tau_start, tau_stop, Idata.shape[0])
-        l_data = np.linspace(l_start, l_stop, Idata.shape[1])
-        if l_start > l_stop:
-            w_start = 2 * np.pi * 299792458.0 / l_start
-            w_stop = 2 * np.pi * 299792458.0 / l_stop
-            w_data = 2 * np.pi * 299792458.0 / l_data[:].copy()
-            Idata_i = Idata.copy()
-
-        else:
-            w_start = 2 * np.pi * 299792458.0 / l_stop
-            w_stop = 2 * np.pi * 299792458.0 / l_start
-            w_data = 2 * np.pi * 299792458.0 / l_data[::-1].copy()
-            Idata_i = np.fliplr(Idata).copy()
-
-        # w0 = 2 * np.pi * 299792458.0 / ((l_stop + l_start) / 2)
-        w0 = (w_start + w_stop)/2
-        root.debug(''.join(('w_start: ', str(w_start))))
-        root.debug(''.join(('w_stop: ', str(w_stop))))
-        # w_data = np.linspace(w_start, w_stop, Idata.shape[1]) - w0
-        # w_data = np.linspace(w_start, w_stop, Idata.shape[1])
-
-        Idata_i = np.flipud(Idata_i).copy()
-        Idata_i[0:2, :] = 0.0
-        Idata_i[-2:, :] = 0.0
-        Idata_i[:, 0:2] = 0.0
-        Idata_i[:, -2:] = 0.0
-        Idata_i = self.filter_frog_trace(Idata_i / Idata_i.max(), 3, thr)
-
-        # Find center wavelength
-        Idata_l = Idata_i.sum(0)
-        l_center = np.trapz(l_data * Idata_l) / np.trapz(Idata_l)
-        # Find time resolution
-        t_res = (tau_stop - tau_start) / n_frog
-        # Generate a suitable time-frequency grid and start pulse
-        self.init_pulsefield_random(n_frog, t_res, l_center)
-
-        root.info('Creating interpolator')
-        t0 = time.clock()
-        # Create a 2D bivariate spline interpolator for input image:
-        Idata_interp = si.RectBivariateSpline(tau_data, w_data, Idata_i)
-        root.info(''.join(('Time spent: ', str(time.clock() - t0))))
-
-        root.info(''.join(('Interpolating frog trace to ', str(self.tau.shape[0]), 'x', str(self.w.shape[0]))))
-        t0 = time.clock()
-        # Interpolate the values for the points in the reconstruction matrix
-        # We shift the frequencies by the central frequency to make sure images are aligned.
-        # Then fftshift is needed due to the way fft sorts its frequency vector (first positive frequencies
-        # then the negative frequencies in the end)
-        I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w+self.w0), 0.0), axes=1).astype(self.dtype_r)
-        # I_w_tau_interp = np.fft.fftshift(np.maximum(Idata_interp(self.tau, self.w), 0.0), axes=1).astype(self.dtype_r)
-        self.I_w_tau = self.filter_frog_trace(I_w_tau_interp, 3, thr)
-
-        if self.roll_fft is True:
-            self.I_w_tau = np.roll(self.I_w_tau, 1, axis=0)
-
-        root.info(''.join(('Time spent: ', str(time.clock() - t0))))
-
-        return Idata_i, w_data, tau_data
-
-    def condition_frog_trace2(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15, filter=True):
+    def condition_frog_trace2(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15, filter_img=True):
         """ Take the measured intensity data and interpolate it to the
         internal w, tau grid. The variables self.w and self.tau must be set up
         first (be e.g. calling one of the init_pulsefield functions).
@@ -299,12 +231,20 @@ class FrogCalculation(object):
 
         w_data = 2 * np.pi * c / l_data[:].copy()
         Idata_i = Idata.copy()
-        if filter is True:
+        if filter_img is True:
             Idata_i = self.filter_frog_trace(Idata_i / Idata_i.max(), 3, thr)
 
+        # Idata_i = np.flipud(Idata_i)
+        # Fine center of gravity time delay for the frog trace time marginal
+        Idata_t = Idata_i.sum(1)
+        tau_center = np.trapz(tau_data * Idata_t) / np.trapz(Idata_t)
+        tau_data -= tau_center      # Correct for off center time delay center of gravity
+        root.debug("Found tau center at {0:.1f} fs".format(tau_center*1e15))
+
         # Find center wavelength
-        # Idata_l = Idata_i.sum(0)
-        # l_center = np.trapz(l_data * Idata_l) / np.trapz(Idata_l)
+        Idata_l = Idata_i.sum(0)
+        l_center = np.trapz(l_data * Idata_l) / np.trapz(Idata_l)
+
         # Find time resolution
         t_res = (tau_stop - tau_start) / n_frog
         # Generate a suitable time-frequency grid and start pulse
@@ -326,15 +266,12 @@ class FrogCalculation(object):
         for ind in range(n_frog):
             Idata_interp = interp1d(tau_data, Itmp_w[:, ind], kind='linear', fill_value=0.0, bounds_error=False)
             I_w_tau[:, ind] = Idata_interp(self.tau)
-        if filter is True:
+        if filter_img is True:
             I_w_tau = self.filter_frog_trace(I_w_tau, 3, thr)
         I_w_tau = np.fft.fftshift(np.maximum(I_w_tau, 0.0), axes=1).astype(self.dtype_r)
         # self.I_w_tau = self.filter_frog_trace(I_w_tau, 3, thr)
         self.I_w_tau = I_w_tau
         self.I_w_tau /= self.I_w_tau.max()
-
-        if self.roll_fft is True:
-            self.I_w_tau = np.roll(self.I_w_tau, 1, axis=0)
 
         root.info(''.join(('Time spent: ', str(time.clock() - t0))))
 
@@ -366,7 +303,6 @@ class FrogCalculation(object):
 
         c_v = 299792458.0
         w0 = 2 * np.pi * c_v / l_center
-        #        w_spectrum = np.linspace(w0-w_span/2, w0+w_span/2, n_t)
         w_spectrum = np.linspace(-w_span / 2, -w_span / 2 + w_res * n_t, n_t)
         self.dw = w_res
         self.w = w_spectrum
@@ -472,91 +408,6 @@ class FrogCalculation(object):
         Idata_f[Idata_f < 0.0] = 0.0
         return Idata_f
 
-    def generate_Esig_t_tau_shg(self):
-        """ Generate the time shifted E-field matrix for the SHG process.
-
-        Output:
-        self.Esig_t_tau, a n_t x n_tau matrix where each row is Esig(t,tau)
-        """
-        root.debug('Generating new Esig_t_tau from SHG')
-        t0 = time.clock()
-
-        Et_mat = np.tile(self.Et, (self.tau.shape[0], 1))  # Repeat Et into a matrix
-        Et_mat_tau = np.zeros_like(Et_mat)
-        n_t = self.Et.shape[0]
-
-        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
-
-        for ind, sh in enumerate(shiftVec):
-
-            if sh < 0:
-                Et_mat_tau[ind, 0:n_t + sh] = self.Et[-sh:]  # Here should be a factor exp(-1j*w0*tau)
-            else:
-                Et_mat_tau[ind, sh:] = self.Et[0:n_t - sh]  # Here should be a factor exp(-1j*w0*tau)
-
-        self.Esig_t_tau = Et_mat * Et_mat_tau
-        self.Et_mat = Et_mat
-        self.Et_mat_tau = Et_mat_tau
-        root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
-
-    def generate_Esig_t_tau_outer_shg(self):
-        """ Generate the time shifted E-field matrix for the SHG process.
-
-        Output:
-        self.Esig_t_tau, a n_t x n_tau matrix where each row is Esig(t,tau)
-        """
-        root.debug('Generating new Esig_t_tau from SHG')
-        t0 = time.clock()
-
-        n_t = self.Et.shape[0]
-        Et_mat = np.outer(self.Et, self.Et)  # Repeat Et into a matrix
-
-        self.Esig_t_tau = np.rot90(Et_mat.flatten()[self.shiftinds].reshape(n_t, n_t))
-        self.Et_mat = Et_mat
-        root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
-
-    def generate_Esig_t_tau_outer_sd(self):
-        """ Generate the time shifted E-field matrix for the SD process.
-
-        Output:
-        self.Esig_t_tau, a n_tau x n_t matrix where each row is Esig(t,tau)
-        """
-        root.debug('Generating new Esig_t_tau from SHG')
-        t0 = time.clock()
-
-        n_t = self.Et.shape[0]
-        Et_mat = np.outer(self.Et, self.Et)  # Repeat Et into a matrix
-
-        self.Esig_t_tau = np.rot90(Et_mat.flatten()[self.shiftInds].reshape(n_t, n_t)*Et_mat)
-        self.Et_mat = Et_mat
-        root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
-
-    def generate_Esig_t_tau_sd(self):
-        """ Generate the time shifted E-field matrix for the SD process.
-
-        Output:
-        self.Esig_t_tau, a n_t x n_tau matrix where each row is Esig(t,tau)
-        """
-        root.debug('Generating new Esig_t_tau from SD')
-        t0 = time.clock()
-
-        Et_mat = np.tile(self.Et, (self.tau.shape[0], 1))  # Repeat Et into a matrix
-        Et_mat_tau = np.zeros_like(Et_mat)
-        n_t = self.Et.shape[0]
-
-        shiftVec = (np.arange(n_t) - n_t / 2).astype(np.int)
-
-        for ind, sh in enumerate(shiftVec):
-            if sh < 0:
-                Et_mat_tau[ind, 0:n_t + sh] = self.Et[-sh:]
-            else:
-                Et_mat_tau[ind, sh:] = self.Et[0:n_t - sh]
-
-        self.Esig_t_tau = Et_mat**2 * np.conj(Et_mat_tau)
-        self.Et_mat = Et_mat
-        self.Et_mat_tau = Et_mat_tau
-        root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
-
     def generate_Esig_t_tau(self, algo='SHG'):
         """ Generate the time shifted E-field matrix for the SD process.
 
@@ -600,10 +451,7 @@ class FrogCalculation(object):
         root.debug('Generating new Esig_w_tau with fft')
         t0 = time.clock()
         n_t = self.Et.shape[0]
-        if self.roll_fft is True:
-            self.Esig_w_tau = np.roll(np.fft.fft(self.Esig_t_tau, axis=1).astype(self.dtype_c), 1, axis=0)
-        else:
-            self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1).astype(self.dtype_c)
+        self.Esig_w_tau = np.fft.fft(self.Esig_t_tau, axis=1).astype(self.dtype_c)
         root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
 
     def apply_intensity_data(self, I_w_tau=None):
@@ -645,24 +493,14 @@ class FrogCalculation(object):
         elif algo == 'SD':
             # Change variables so that we have Esig(t+tau, tau) and integrate in tau direction
             Esig = self.Esig_t_tau_p
-            # Esig_p = np.zeros_like(Esig)  # Esig(t+tau, tau)
-            # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
-            # for ind, sh in enumerate(shift_vec):
-            #     if sh < 0:
-            #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
-            #     else:
-            #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
-            # self.Et = np.conj(Esig_p[::-1, :].sum(axis=0))
             self.Et = np.conj(Esig.sum(axis=0))/np.abs(self.Et.sum())
         else:
             raise ValueError("Unknown algorithm")
-        # self.Et = self.Et / np.abs(self.Et).max()
         root.debug(''.join(('Time spent: ', str(time.clock() - t0))))
 
     def update_Et_gp(self, algo='SHG'):
         root.debug('Updating Et using GP algorithm')
         t0 = time.clock()
-        n_t = self.Et.shape[0]
         self.Esig_t_tau_p = np.fft.ifft(self.Esig_w_tau_p, axis=1)
         eps = 0.0
         bad_ind = np.abs(self.Esig_t_tau_p) < eps
@@ -671,14 +509,12 @@ class FrogCalculation(object):
         if algo == 'SHG':
             self.grad_z_shg()
             alpha = self.min_z_shg()
-            # alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
         elif algo == 'SD':
             self.grad_z_sd()
             alpha = self.min_z_sd()
         elif algo == 'PG':
             self.grad_z_pg()
             alpha = self.min_z_pg()
-            # alpha = fmin(self.functional_distance_proj, -1.0, args=(algo,))
         else:
             raise ValueError(''.join(('Algorithm ', str(algo), ' not valid.')))
 
@@ -717,10 +553,6 @@ class FrogCalculation(object):
         """
         Ea = self.Et + alpha * self.dZ
         n_t = Ea.shape[0]
-
-        # Ea_mat = np.tile(Ea, (n_t, 1))  # Repeat Ea into a matrix so it can be directly multiplied with the signal
-        #                                 # matrix
-        # z0 = self.Esig_t_tau_p - Ea_mat * Ea_mat.flatten()[self.shiftinds_neg].reshape(n_t, n_t)
 
         Ea_mat = np.tile(Ea, (n_t, 1))  # Repeat Et into a matrix
         Ea_mat_tau = np.zeros_like(Ea_mat)
@@ -898,17 +730,6 @@ class FrogCalculation(object):
         Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
         Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
 
-        # shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
-        # for ind, sh in enumerate(shift_vec):
-        #     if sh < 0:
-        #         Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
-        #         Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
-        #         Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
-        #     else:
-        #         Et_tau_n[ind, sh:] = Et[0:n_t - sh]
-        #         Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
-        #         Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
-
         shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
         for ind, sh in enumerate(shift_vec):
             if sh < 0:
@@ -916,7 +737,6 @@ class FrogCalculation(object):
             else:
                 Et_tau_n[ind, sh:] = Et[0:n_t - sh]
 
-        # shift_vec_p = n_t / 2 - np.arange(n_t)
         for ind, sh in enumerate(shift_vec):
             if sh > 0:
                 Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
@@ -994,49 +814,6 @@ class FrogCalculation(object):
 
         self.dZ = dZ
         return dZ
-
-    def tau_tests_vec(self):
-        n_t = self.Et.shape[0]
-        Et = self.Et
-        Esig = self.Esig_t_tau_p
-        Et_mat = np.tile(Et, (n_t, 1))  # Copy Et for each tau value
-        Et_tau_p = np.zeros_like(Et_mat)  # E(t+tau)
-        Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
-        Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
-
-        shift_vec = (np.arange(n_t) - n_t / 2).astype(np.int)
-        for ind, sh in enumerate(shift_vec):
-            if sh < 0:
-                Et_tau_n[ind, 0:n_t + sh] = Et[-sh:]
-                Et_tau_p[ind, -sh:] = Et[0:n_t + sh]
-                Esig_p[ind, -sh:] = Esig[ind, 0:n_t + sh]
-            else:
-                Et_tau_n[ind, sh:] = Et[0:n_t - sh]
-                Et_tau_p[ind, 0:n_t - sh] = Et[sh:]
-                Esig_p[ind, 0:n_t - sh] = Esig[ind, sh:]
-        return Et_mat, Et_tau_n, Et_tau_p, Esig_p
-
-    def tau_tests_loop(self):
-        n_t = self.Et.shape[0]
-        Et = self.Et
-        Esig = self.Esig_t_tau_p
-        Et_mat = np.tile(Et, (n_t, 1))  # Copy Et for each tau value
-        Et_tau_p = np.zeros_like(Et_mat)  # E(t+tau)
-        Et_tau_n = np.zeros_like(Et_mat)  # E(t-tau)
-        Esig_p = np.zeros_like(Et_mat)  # Esig(t+tau, tau)
-
-        for t0 in range(Esig.shape[1]):
-            T = 0.0 + 0.0j
-            for tau in range(Esig.shape[0]):
-                Et_mat[tau, t0] = Et[t0]
-                tp = t0 - (tau - np.int(n_t/2))
-                if 0 <= tp < Esig.shape[1]:
-                    Et_tau_n[tau, t0] = Et[tp]
-                tp = t0 + (tau - np.int(n_t / 2))
-                if 0 <= tp < Esig.shape[1]:
-                    Et_tau_p[tau, t0] = Et[tp]
-                    Esig_p[tau, t0] = Esig[tau, tp]
-        return Et_mat, Et_tau_n, Et_tau_p, Esig_p
 
     def min_z_shg_naive(self):
         Et0 = self.Et
@@ -1229,17 +1006,6 @@ class FrogCalculation(object):
         a1 = Ek*Ek*np.conj(dZn) + 2*Ek*np.conj(En)*dZk
         a0 = Ek*Ek*np.conj(En) - Esig
 
-        # Generate polynomial X that is an expansion of Z(alpha) = Z( E(t_k) + alpha*dZ/dE(t_k) ) in alpha
-        # X = np.zeros(7)
-        # X[0] = (a3 * np.conj(a3)).sum()
-        # X[1] = (2.0*np.real(a3*np.conj(a2))).sum()
-        # X[2] = (2.0*np.real(a3*np.conj(a1)) + a2*np.conj(a2)).sum()
-        # X[3] = (2.0*np.real(a3*np.conj(a0) + a2*np.conj(a1))).sum()
-        # X[4] = (2.0*np.real(a2*np.conj(a0)) + a1*np.conj(a1)).sum()
-        # X[5] = (2.0*np.real(a1*np.conj(a0))).sum()
-        # X[6] = (a0*np.conj(a0)).sum()
-        # X /= (mx * n_t * n_t)
-
         X = np.zeros(7)
         X[0] = (a3 * np.conj(a3)).sum()
         X[1] = (2.0 * np.real(a3 * np.conj(a2))).sum()
@@ -1273,11 +1039,23 @@ class FrogCalculation(object):
         return alpha
 
     def center_peaktime(self):
+        """
+        Center the reconstructed E-field E(t) maximum value in time.
+
+        :return:
+        """
         ind = np.argmax(abs(self.Et))
         shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
         self.Et = np.roll(self.Et, shift)
 
     def calc_reconstruction_error(self):
+        """
+        Calculate the reconstruction error as the sum of the squared difference between experimental frog trace image
+        I_w_tau and reconstructed frog image. The calculated error is appended to the class variable G_hist where
+        the error history is stored as a list.
+
+        :return: Reconstruction error G
+        """
         root.debug('Calculating reconstruction error')
         tic = time.clock()
         Esig_w_tau = self.Esig_w_tau
@@ -1294,80 +1072,246 @@ class FrogCalculation(object):
         return G
 
     def get_trace_abs(self, norm=True):
-        # Center peak in time
-        ind = np.argmax(abs(self.Et))
-        shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
-        Et = np.abs(np.roll(self.Et, shift))
-        if norm is True:
-            Et /= Et.max()
+        """
+        Retrieve the magnitude of the reconstructed E-field (Et). Use get_t for the
+        corresponding time vector.
+
+        :param norm: If true, the return vector is normalized
+        :return: Vector of the magnitude of the E-field abs(E(t))
+        """
+        if self.Et is not None:
+            # Center peak in time
+            ind = np.argmax(abs(self.Et))
+            shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
+            Et = np.abs(np.roll(self.Et, shift))
+            if norm is True:
+                Et /= Et.max()
+        else:
+            Et = None
         return Et
 
-    def get_trace_phase(self, linear_comp=False):
-        eps = 0.01
+    def get_trace_spectral_abs(self, norm=True):
+        """
+        Retrieve the spectral magnitude of the reconstructed E-field (fft of Et). Use get_w for the
+        corresponding angular frequency vector.
 
-        # Center peak in time
-        ind = np.argmax(abs(self.Et))
-        shift = self.Et.shape[0] / 2 - ind
-        Et = np.roll(self.Et, shift)
+        :param norm: If true, the return vector is normalized
+        :return: Vector of the magnitude of the E-field abs(E(w))
+        """
+        if self.Et is not None:
+            # Center peak in time
+            ind = np.argmax(abs(self.Et))
+            shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
+            Et = np.roll(self.Et, shift)
 
-        ph0_ind = np.int(Et.shape[0] / 2)
-        ph = np.angle(Et)
-        ph_diff = np.diff(ph)
-        ph_ind = np.where(np.abs(ph_diff) > 5.0)
+            N = Et.shape[0]
+            wf = np.fft.fftfreq(N)
+            w_ind = np.argsort(wf)
 
-        for ind in ph_ind[0]:
-            if ph_diff[ind] < 0:
-                ph[ind + 1:] += 2 * np.pi
-            else:
-                ph[ind + 1:] -= 2 * np.pi
+            Ew = np.abs(np.fft.fft(np.fft.fftshift(Et))[w_ind])
 
-        ph0 = ph[ph0_ind]
-        Et_mag = np.abs(Et)
-        low_ind = np.where(Et_mag < eps)
-        ph[low_ind] = np.nan
-        if linear_comp is True:
-            idx = np.isfinite(ph)
-            x = np.arange(Et.shape[0])
-            ph_poly = np.polyfit(x[idx], ph[idx], 1)
-            ph_out = ph - np.polyval(ph_poly, x)
+            if norm is True:
+                Ew /= Ew.max()
         else:
-            ph_out = ph - ph0
+            Ew = None
+        return Ew
+
+    def get_trace_phase(self, linear_comp=False):
+        """
+        Retrieve the temporal phase of the reconstructed E-field. The phase is zero at the peak field and NaN
+        where the field magnitude is lower than the threshold phase_thr (class variable). Use get_t for the
+        corresponding time vector.
+
+        :param linear_comp: If true, the linear part of the phase (i.e. frequency shift) if removed
+        :return: Temporal phase vector.
+        """
+        eps = self.phase_thr
+
+        if self.Et is not None:
+            # Center peak in time
+            ind = np.argmax(abs(self.Et))
+            shift = self.Et.shape[0] / 2 - ind
+            Et = np.roll(self.Et, shift)
+
+            # Unravelling 2*pi phase jumps
+            ph0_ind = np.int(Et.shape[0] / 2)           # Center index
+            ph = np.angle(Et)
+            ph_diff = np.diff(ph)
+            # We need to sample often enough that the difference in phase is less than 5 rad
+            # A larger jump is taken as a 2*pi phase jump
+            ph_ind = np.where(np.abs(ph_diff) > 5.0)
+            # Loop through the 2*pi phase jumps
+            for ind in ph_ind[0]:
+                if ph_diff[ind] < 0:
+                    ph[ind + 1:] += 2 * np.pi
+                else:
+                    ph[ind + 1:] -= 2 * np.pi
+
+            # Find relevant portion of the pulse (intensity above a threshold value)
+            ph0 = ph[ph0_ind]
+            Et_mag = np.abs(Et)
+            low_ind = np.where(Et_mag < eps)
+            ph[low_ind] = np.nan
+
+            # Here we could go through contiguous regions and make the phase connect at the edges...
+
+            # Linear compensation is we have a frequency shift (remove 1st order phase)
+            if linear_comp is True:
+                idx = np.isfinite(ph)
+                x = np.arange(Et.shape[0])
+                ph_poly = np.polyfit(x[idx], ph[idx], 1)
+                ph_out = ph - np.polyval(ph_poly, x)
+            else:
+                ph_out = ph - ph0
+        else:
+            ph_out = None
+        return ph_out
+
+    def get_trace_spectral_phase(self, linear_comp=True):
+        """
+        Retrieve the spectral phase of the reconstructed E-field. The phase is zero at the peak field and NaN
+        where the field magnitude is lower than the threshold phase_thr (class variable). Use get_w for the
+        corresponding angular frequency vector.
+
+        :param linear_comp: If true, the linear part of the phase (i.e. time shift) if removed
+        :return: Spectral phase vector.
+        """
+        eps = self.phase_thr    # Threshold for intensity where we have signal
+
+        # Check if there is a reconstructed field:
+        if self.Et is not None:
+            N = self.Et.shape[0]
+            w_ind = np.argsort(np.fft.fftfreq(N))   # Sorted index vector to unravel the fft:d E-field vector
+
+            # Center peak in time
+            ind = np.argmax(abs(self.Et))
+            shift = (self.Et.shape[0] / 2 - ind).astype(np.int)
+            Et = np.roll(self.Et, shift)
+
+            Ew = np.fft.fft(np.fft.fftshift(Et))[w_ind]
+            # Normalize
+            Ew /= abs(Ew).max()
+
+            # Unravelling 2*pi phase jumps
+            ph0_ind = np.argmax(abs(Ew))
+            ph = np.angle(Ew)
+            ph_diff = np.diff(ph)
+            # We need to sample often enough that the difference in phase is less than 5 rad
+            # A larger jump is taken as a 2*pi phase jump
+            ph_ind = np.where(np.abs(ph_diff) > 5.0)
+            # Loop through the 2*pi phase jumps
+            for ind in ph_ind[0]:
+                if ph_diff[ind] < 0:
+                    ph[ind + 1:] += 2 * np.pi
+                else:
+                    ph[ind + 1:] -= 2 * np.pi
+
+            # Find relevant portion of the pulse (intensity above a threshold value)
+            Ew_mag = np.abs(Ew)
+            low_ind = np.where(Ew_mag < eps)
+            ph[low_ind] = np.nan
+
+            # Here we could go through contiguous regions and make the phase connect at the edges...
+
+            # Linear compensation is we have a frequency shift (remove 1st order phase)
+            if linear_comp is True:
+                idx = np.isfinite(ph)
+                x = np.arange(N)
+                ph_poly = np.polyfit(x[idx], ph[idx], 1)
+                ph_out = ph - np.polyval(ph_poly, x)
+            else:
+                ph_out = ph
+            ph_out -= ph_out[ph0_ind]
+        else:
+            ph_out = None
         return ph_out
 
     def get_t(self):
+        """
+        Retrieve the time vector for the reconstructed E-field
+        :return: time vector
+        """
         return self.t
 
-    def get_trace_summary(self):
+    def get_w(self):
+        """
+        Retrieve the angular frequency vector for the reconstructed E-field
+        :return: angular frequency vector
+        """
+        return self.w
+
+    def get_trace_summary(self, domain='temporal'):
         """
         Calculate trace parameters such as intensity FWHM and phase difference over the trace region.
-        Should also calculate frequency space components phi**2, phi**3 ... in the future
+        :param domain: 'temporal' for time domain parameters,
+                     'spectral' for frequency domain parameters
         :return:
-        t_fwhm: full width at half maximum of the intensity trace (E-field squared)
+        trace_fwhm: full width at half maximum of the intensity trace (E-field squared)
         delta_ph: phase difference (max-min) of the phase trace
         """
-        Et = self.get_trace_abs()
-        It = Et**2
-        t = self.get_t()
-        ph = self.get_trace_phase()
+        if domain=='temporal':
+            Eabs = self.get_trace_abs()
+            ph = self.get_trace_phase()
+            x = self.get_t()
+        else:
+            Eabs = self.get_trace_spectral_abs()
+            ph = self.get_trace_spectral_phase()
+            x = self.get_w()
+        It = Eabs**2
+
         # Calculate FWHM
         t_ind = np.where(np.diff(np.sign(It - 0.5)))[0]
         if t_ind.shape[0] > 1:
-            t_fwhm = t[t_ind[-1]] - t[t_ind[0]]
+            trace_fwhm = x[t_ind[-1]] - x[t_ind[0]]
             ph_fwhm = ph[t_ind[0]:t_ind[-1]]
             ph_good = ph_fwhm[np.isfinite(ph_fwhm)]
             delta_ph = ph_good.max() - ph_good.min()
         else:
-            t_fwhm = np.nan
+            trace_fwhm = np.nan
             delta_ph = np.nan
-        return t_fwhm, delta_ph
+        return trace_fwhm, delta_ph
+
+    def get_temporal_phase_expansion(self, orders=4, prefix=1e-15):
+        """
+        Calculate a polynomial fit to the retrieved phase curve as function of time (temporal phase)
+        :param orders: Number of orders to include in the fit
+        :param prefix: Factor that the time is scaled with before the fit (1e-15 => fs)
+        :return: Polynomial coefficients, highest order first
+        """
+        if self.Et is not None:
+            t = self.get_t()
+            ph = self.get_trace_phase()
+            ph_ind = np.isfinite(ph)
+            ph_good = ph[ph_ind]
+            t_good = t[ph_ind] / prefix
+            ph_poly = np.polyfit(t_good, ph_good, orders)
+        else:
+            ph_poly = None
+        return ph_poly
+
+    def get_spectral_phase_expansion(self, orders=4, prefix=1e12):
+        """
+        Calculate a polynomial fit to the retrieved phase curve as function of angular frequency (spectral phase)
+        :param orders: Number of orders to include in the fit
+        :param prefix: Factor that the angular frequency is scaled with before the fit (1e12 => Trad)
+        :return: Polynomial coefficients, highest order first
+        """
+        if self.Et is not None:
+            w = self.w
+            ph = self.get_trace_spectral_phase()
+            ph_ind = np.isfinite(ph)
+            ph_good = ph[ph_ind]
+            w_good = w[ph_ind] / prefix
+            ph_poly = np.polyfit(w_good, ph_good, orders)
+        else:
+            ph_poly = None
+        return ph_poly
 
     def setup_vanilla_algorithm(self):
         pass
 
-    def run_cycle_vanilla(self, cycles=1, algo='SHG', roll_fft=False):
+    def run_cycle_vanilla(self, cycles=1, algo='SHG'):
         root.debug('Starting FROG reconstruction cycle using the vanilla algorithm')
-
-        self.roll_fft = roll_fft
 
         t0 = time.clock()
         error = []
@@ -1392,9 +1336,8 @@ class FrogCalculation(object):
     def setup_gp_algorithm(self):
         pass
 
-    def run_cycle_gp(self, cycles=1, algo='SHG', roll_fft=False):
+    def run_cycle_gp(self, cycles=1, algo='SHG', center_time=True):
         root.debug('Starting FROG reconstruction cycle using the GP algorithm')
-        self.roll_fft = roll_fft
         t0 = time.clock()
         error = []
         self.setup_gp_algorithm()
@@ -1405,7 +1348,8 @@ class FrogCalculation(object):
             G = self.calc_reconstruction_error()
             self.apply_intensity_data()
             self.update_Et_gp(algo)
-            self.center_peaktime()
+            if center_time is True:
+                self.center_peaktime()
             root.debug('-------------------------------------------')
             root.debug(''.join(('Error G = ', str(G))))
             root.debug('-------------------------------------------')
@@ -1451,10 +1395,11 @@ if __name__ == '__main__':
     # dt = 6e-15
     # l0 = 263.5e-9
     # frog.init_pulsefield_random(N, dt, l0)
-    frog.load_frog_trace2('./data/frogtrace_2017-03-08_10h43_image.png', thr=0.15, l_start_pixel=0, l_stop_pixel=-1,
+    frog.load_frog_trace2('./data/frogtrace_2017-03-13_17h35_uv_pg_67mm_image', thr=0.65, l_start_pixel=0, l_stop_pixel=-1,
                          t_start_pixel=0, t_stop_pixel=-1)
     er = np.array([])
-    er = frog.run_cycle_vanilla(1, 'PG', roll_fft=False)
+    er = frog.run_cycle_vanilla(1, 'PG')
     # er = frog.run_cycle_gp(20, 'SD', roll_fft=False)
     # er = np.hstack((er, frog.run_cycle_gp(1, 'SHG', roll_fft=False)))
     # er = np.hstack((er, frog.run_cycle_gp(50, 'PG', roll_fft=True)))
+
