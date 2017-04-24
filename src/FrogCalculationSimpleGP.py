@@ -60,7 +60,7 @@ class FrogCalculation(object):
         self.alpha = []             # List recording of the distance moved in the dZ direction each iteration
         self.G_hist = []            # List recording of the reconstruction error each iteration
 
-        self.phase_thr = 0.01        # Threshold amplitude for phase information methods (get_phase etc.)
+        self.phase_thr = 0.1        # Threshold amplitude for phase information methods (get_phase etc.)
 
     def init_pulsefield_random(self, n_t, t_res, l_center, tau_pulse=100e-15, seed=0):
         """ Initiate signal field with parameters:
@@ -1249,7 +1249,7 @@ class FrogCalculation(object):
         trace_fwhm: full width at half maximum of the intensity trace (E-field squared)
         delta_ph: phase difference (max-min) of the phase trace
         """
-        if domain=='temporal':
+        if domain == 'temporal':
             Eabs = self.get_trace_abs()
             ph = self.get_trace_phase()
             x = self.get_t()
@@ -1362,7 +1362,7 @@ class FrogCalculation(object):
 
 if __name__ == '__main__':
     N = 256
-    dt = 10e-15
+    dt = 20e-15
     l0 = 263.5e-9
     tau_pulse = 100e-15
 
@@ -1395,10 +1395,11 @@ if __name__ == '__main__':
     # dt = 6e-15
     # l0 = 263.5e-9
     # frog.init_pulsefield_random(N, dt, l0)
-    frog.load_frog_trace2('./data/frogtrace_2017-03-13_17h35_uv_pg_67mm_image', thr=0.65, l_start_pixel=0, l_stop_pixel=-1,
-                         t_start_pixel=0, t_stop_pixel=-1)
+    frog.load_frog_trace2('./data/frogtrace_2017-03-13_17h35_uv_pg_67mm_image',
+                          thr=0.65, l_start_pixel=0, l_stop_pixel=-1,
+                          t_start_pixel=0, t_stop_pixel=-1)
     er = np.array([])
-    er = frog.run_cycle_vanilla(1, 'PG')
+    er = frog.run_cycle_gp(100, 'PG')
     # er = frog.run_cycle_gp(20, 'SD', roll_fft=False)
     # er = np.hstack((er, frog.run_cycle_gp(1, 'SHG', roll_fft=False)))
     # er = np.hstack((er, frog.run_cycle_gp(50, 'PG', roll_fft=True)))

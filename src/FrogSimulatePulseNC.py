@@ -270,19 +270,20 @@ class SimulatedFrogTrace(object):
     
 if __name__ == '__main__':
     Ns = 512
-    dt = 4e-15
-    tau = 200e-15 / (2*np.sqrt(np.log(2)))
-    l0 = 800e-9
+    dt = 5e-15
+    tau = 100e-15 / (2*np.sqrt(np.log(2)))
+    l0 = 263.5e-9
     p = SimulatedPulse(Ns, dt, l0, tau)
 #     p.generateGaussianCubicPhase(5e24, 1e40)
 #     p.generateGaussianCubicPhase(-5e26, 0)
-    p.generateGaussianCubicSpectralPhase(0, 1e-40)
+    p.generateGaussianCubicSpectralPhase(0e-27, 0.3e-40)
+#     p.generateDoublePulse(tau, 0.5e-12)
 #     p.generateGaussian(tau)
 #     p.addChirp(1e26)
     gt = SimulatedFrogTrace(Ns, dt, l0)
     gt.pulse = p
-    IfrogSHG = gt.generateSHGTraceDt(Ns, dt, 410e-9)
-    IfrogSD = gt.generateSDTraceDt(Ns, dt, 800e-9)
-    IfrogPG = gt.generatePGTraceDt(Ns, dt, 800e-9)
+    IfrogSHG = gt.generateSHGTraceDt(Ns, dt, l0/2)
+    IfrogSD = gt.generateSDTraceDt(Ns, dt, l0)
+    IfrogPG = gt.generatePGTraceDt(Ns, dt, l0)
     l = gt.getWavelengths()
     t = gt.getTimedelays()

@@ -88,7 +88,7 @@ class FrogCalculation(object):
                 else:
                     vTmp = 'intel'
                 d = p.get_devices(device_type=cl.device_type.CPU)
-                if d != []:
+                if not d == []:
                     v = vTmp
                     break
         root.debug(''.join(('Using device ', str(d), ' from ', v)))

@@ -70,6 +70,10 @@ class MyQSplitter(QtGui.QSplitter):
 
 
 class TangoDeviceClient(QtGui.QWidget):
+    """
+    Class for scanning a motor while grabbing images to produce a frog trace. It can also analyse the scanned trace
+    or saved traces.
+    """
     def __init__(self, cameraName, motorName, parent=None):
         QtGui.QWidget.__init__(self, parent)
         self.settings = QtCore.QSettings('Maxlab', 'Frog')
@@ -81,7 +85,6 @@ class TangoDeviceClient(QtGui.QWidget):
         self.motorName = motorName
 
         t0 = time.clock()
-        print time.clock() - t0, ' s'
 
         self.guiLock = threading.Lock()
 
@@ -168,14 +171,15 @@ class TangoDeviceClient(QtGui.QWidget):
             self.moving = False
 
     def readSpeed(self, data):
-        self.currentSpeedLabel.setText(QtCore.QString.number(data.value, 'f', 3))
-        if self.moveStart is True:
-            if data.value > 0.01:
-                self.moving = True
-                self.moveStart = False
-        if self.moving is True:
-            if np.abs(data.value) < 0.001:
-                self.moving = False
+        if data is not None:
+            self.currentSpeedLabel.setText(QtCore.QString.number(data.value, 'f', 3))
+            if self.moveStart is True:
+                if data.value > 0.01:
+                    self.moving = True
+                    self.moveStart = False
+            if self.moving is True:
+                if np.abs(data.value) < 0.001:
+                    self.moving = False
 
     def writePosition(self):
         w = self.setPosSpinbox.value()
@@ -222,7 +226,7 @@ class TangoDeviceClient(QtGui.QWidget):
     #        self.scanTimer.start(100 * self.avgSamples)
 
     def stopScan(self):
-        print 'Stopping scan'
+        root.debug("Stopping scan")
         self.running = False
         self.scanning = False
         self.scanTimer.stop()
@@ -441,8 +445,14 @@ class TangoDeviceClient(QtGui.QWidget):
             root.debug('Threshold: ' + str(thr))
             kernel = self.frogKernelMedianSpinbox.value()
             root.debug('Starting medfilt...')
-            filteredImg = medfilt2d(roiImg, kernel) - thr
-            filteredImg = gaussian_filter(filteredImg, self.frogKernelGaussianSpinbox.value())
+            if kernel > 1:
+                filteredImg = medfilt2d(roiImg, kernel) - thr
+            else:
+                filteredImg = roiImg - thr
+            gauss_kernel = self.frogKernelGaussianSpinbox.value()
+            if gauss_kernel > 1:
+                filteredImg = gaussian_filter(filteredImg, gauss_kernel)
+
             #             filteredImg = roiImg - thr
             root.debug('Filtering complete')
             filteredImg[filteredImg < 0.0] = 0.0
@@ -819,7 +829,7 @@ class TangoDeviceClient(QtGui.QWidget):
         self.frogTemporalSpectralCombobox = QtGui.QComboBox()
         self.frogTemporalSpectralCombobox.addItem('Temporal')
         self.frogTemporalSpectralCombobox.addItem('Spectral')
-        self.frogTemporalSpectralCombobox.setCurrentIndex(self.settings.value('frogMethod', 0).toInt()[0])
+        self.frogTemporalSpectralCombobox.setCurrentIndex(self.settings.value('frogTemporalSpectral', 0).toInt()[0])
         self.frogTemporalSpectralCombobox.currentIndexChanged.connect(self.updateExpansionCoefficients)
         self.frogExpansion1 = QtGui.QLabel()
         self.frogExpansion2 = QtGui.QLabel()
