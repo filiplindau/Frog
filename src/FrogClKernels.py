@@ -6,20 +6,23 @@ Created on 9 Feb 2016
 import numpy as np
 import pyopencl as cl
 
+
 class FrogClKernels(object):
     def __init__(self, ctx):
         self.progs = {}
         self.ctx = ctx
         
-        self.initEsigTau()      # SHG and SD generation included
+        self.initEsigTau()      # SHG, PG, and SD generation included
         self.initEsigWTauRoll()
         self.initApplyIntensityData()
         self.initUpdateEtVanilla()
         
         self.initGradZSHG()
         self.initGradZSD()
+        self.initGradZPG()
         self.initMinZerrSHG()
         self.initMinZerrSD()
+        self.initMinZerrPG()
         self.initUpdateEtGP()
         self.initNormEsig()
         
@@ -49,6 +52,30 @@ class FrogClKernels(object):
         """
         prg = cl.Program(self.ctx, Source).build()
         self.progs['generateEsig_t_tau_SD'] = prg
+
+        Source = """
+        #include <pyopencl-complex.h>
+        __kernel void generateEsig_t_tau_PG(__global cfloat_t* Et, __global cfloat_t* Esig, int N){
+            const int tau_i = get_global_id(0);
+            const int t_i = get_global_id(1);
+            cfloat_t Etmp = (cfloat_t)(1.0f, 1.0f);
+            int ind = (t_i-tau_i+N/2+N)%N;
+
+            if (t_i > (tau_i-N/2) && (t_i - tau_i) < N/2)
+            {
+                Esig[t_i + N*tau_i] = cfloat_mul(Et[t_i], cfloat_mul(Et[ind], cfloat_conj(Et[ind])));
+            }
+            else
+            {
+                Esig[t_i + N*tau_i] = cfloat_new(0.0f, 0.0f);
+            };
+
+//            Esig[t_i + N*tau_i] = cfloat_mul(Et[t_i], cfloat_mul(Et[ind], cfloat_conj(Et[ind])));
+//            Esig[t_i + N*tau_i] = cfloat_new(cfloat_real(Et[t_i]), 0.0f);
+        }
+        """
+        prg = cl.Program(self.ctx, Source).build()
+        self.progs['generateEsig_t_tau_PG'] = prg
 
     def initEsigWTauRoll(self):        
         Source = """
@@ -173,7 +200,7 @@ class FrogClKernels(object):
                 }
                 
             }
-            dZ[t_i] = cfloat_divider(T, -N*N);
+            dZ[t_i] = cfloat_divider(T, N*N);
         }
         """
         prg = cl.Program(self.ctx, Source).build()
@@ -212,11 +239,52 @@ class FrogClKernels(object):
                 }
                 
             }
-            dZ[t_i] = cfloat_divider(T, -N*N);
+            dZ[t_i] = cfloat_divider(T, N*N);
         }
         """
         prg = cl.Program(self.ctx, Source).build()
         self.progs['gradZSD'] = prg
+
+    def initGradZPG(self):
+        Source = """
+        #include <pyopencl-complex.h>
+        __kernel void gradZPG(__global cfloat_t* Esig_t_tau, __global cfloat_t* Et, __global cfloat_t* dZ, int N){
+            const int t_i = get_global_id(0);
+
+            cfloat_t T = (cfloat_t)(0.0f, 0.0f);
+            cfloat_t tmp0, tmp1, tmp2;
+            int tp;
+
+            for (int tau_i=0; tau_i<N; tau_i++)
+            {
+                tp = t_i-(tau_i-N/2);
+                if (tp >= 0 && tp < N)
+                {
+                    tmp0 = cfloat_mul(cfloat_conj(Et[tp]), Et[tp]);
+                    // Complex number subtraction routine doesn't work so I have to do like this:
+                    tmp2 = cfloat_mul(Et[t_i], tmp0);
+                    tmp1 = cfloat_new(cfloat_real(tmp2) - cfloat_real(Esig_t_tau[t_i+N*tau_i]), cfloat_imag(tmp2) - cfloat_imag(Esig_t_tau[t_i+N*tau_i]));
+                    tmp2 = cfloat_mul(tmp1, tmp0);
+                    T = cfloat_add(T, tmp2);
+                }
+                tp = t_i+(tau_i-N/2);
+                if (tp >= 0 && tp < N)
+                {
+                    tmp0 = cfloat_mul(Et[tp], cfloat_conj(Et[tp]));
+                    tmp1 = cfloat_mul(Et[t_i], cfloat_conj(Et[t_i]));
+                    tmp2 = cfloat_mul(tmp0, tmp1);
+                    // Complex number subtraction routine doesn't work so I have to do like this:
+                    tmp0 = cfloat_mul(Esig_t_tau[tp+N*tau_i], cfloat_conj(Et[tp]));
+                    tmp1 = cfloat_new(cfloat_real(tmp2) - cfloat_real(tmp0), cfloat_imag(tmp2));
+                    tmp2 = cfloat_mulr(cfloat_mul(tmp1, Et[t_i]), 2.0f);
+                    T = cfloat_add(T, tmp2);
+                }
+            }
+            dZ[t_i] = cfloat_mulr(cfloat_divider(T, N*N), 2.0f);
+        }
+        """
+        prg = cl.Program(self.ctx, Source).build()
+        self.progs['gradZPG'] = prg
         
     def initMinZerrSHG(self):
         Source = """
@@ -311,7 +379,70 @@ class FrogClKernels(object):
         }
         """
         prg = cl.Program(self.ctx, Source).build()
-        self.progs['minZerrSD'] = prg        
+        self.progs['minZerrSD'] = prg
+
+    def initMinZerrPG(self):
+        Source = """
+        #include <pyopencl-complex.h>
+        __kernel void minZerrPG(__global cfloat_t* Esig_t_tau, __global cfloat_t* Et, __global cfloat_t* dZ, __global float* X0, __global float* X1, __global float* X2, __global float* X3, __global float* X4, __global float* X5, __global float* X6, int N){
+            const int t_i = get_global_id(0);
+
+            int tp;
+            cfloat_t a0, a1, a2, a3;
+            cfloat_t tmp0, tmp1, tmp2;
+            X0[t_i] = 0.0f;
+            X1[t_i] = 0.0f;
+            X2[t_i] = 0.0f;
+            X3[t_i] = 0.0f;
+            X4[t_i] = 0.0f;
+            X5[t_i] = 0.0f;
+            X6[t_i] = 0.0f;
+
+            for (int tau_i=0; tau_i<N; tau_i++)
+            {
+                tp = t_i-(tau_i-N/2);
+                if (tp >= 0 && tp < N)
+                {
+                    tmp0 = cfloat_mul(Et[t_i], cfloat_mul(Et[tp], cfloat_conj(Et[tp])));
+                    a0 = cfloat_new(cfloat_real(tmp0) - cfloat_real(Esig_t_tau[t_i+N*tau_i]), cfloat_imag(tmp0) - cfloat_imag(Esig_t_tau[t_i+N*tau_i]));
+
+                    tmp0 = cfloat_mul(dZ[tp], cfloat_conj(Et[tp]));
+                    tmp1 = cfloat_mul(Et[t_i], cfloat_add(tmp0, cfloat_conj(tmp0)));
+                    tmp2 = cfloat_mul(dZ[t_i], cfloat_mul(Et[tp], cfloat_conj(Et[tp])));
+                    a1 = cfloat_add(tmp1, tmp2);
+
+                    tmp0 = cfloat_mul(dZ[tp], cfloat_conj(Et[tp]));
+                    tmp1 = cfloat_mul(dZ[t_i], cfloat_add(tmp0, cfloat_conj(tmp0)));
+                    tmp2 = cfloat_mul(Et[t_i], cfloat_mul(dZ[tp], cfloat_conj(dZ[tp])));
+                    a2 = cfloat_add(tmp1, tmp2);
+
+                    tmp0 = cfloat_mul(dZ[t_i], cfloat_mul(dZ[tp], cfloat_conj(dZ[tp])));
+                    a3 = tmp0;
+
+                    X0[t_i] += cfloat_real(cfloat_mul(a3, cfloat_conj(a3)));
+                    X1[t_i] += cfloat_real(cfloat_mul(a3, cfloat_conj(a2)));
+                    tmp0 = cfloat_mul(a3, cfloat_conj(a1));
+                    tmp1 = cfloat_mul(a2, cfloat_conj(a2));
+                    X2[t_i] += cfloat_real(cfloat_add(tmp0, tmp1));
+                    tmp0 = cfloat_mul(a3, cfloat_conj(a0));
+                    tmp1 = cfloat_mul(a2, cfloat_conj(a1));
+                    X3[t_i] += cfloat_real(cfloat_add(tmp0, tmp1));
+                    tmp0 = cfloat_mul(a2, cfloat_conj(a0));
+                    tmp1 = cfloat_mul(a1, cfloat_conj(a1));
+                    X4[t_i] += cfloat_real(cfloat_add(tmp0, tmp1));
+                    X5[t_i] += cfloat_real(cfloat_mul(a1, cfloat_conj(a0)));
+                    X6[t_i] += cfloat_real(cfloat_mul(a0, cfloat_conj(a0)));
+                }
+            }
+            X1[t_i] = 2 * X1[t_i];
+            X2[t_i] = 2 * X2[t_i];
+            X3[t_i] = 2 * X3[t_i];
+            X4[t_i] = 2 * X4[t_i];
+            X5[t_i] = 2 * X5[t_i];
+        }
+        """
+        prg = cl.Program(self.ctx, Source).build()
+        self.progs['minZerrPG'] = prg
 
     def initUpdateEtGP(self):
         Source = """

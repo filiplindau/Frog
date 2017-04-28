@@ -52,7 +52,8 @@ import PyTango as pt
 import threading
 import numpy as np
 
-import FrogCalculationSimpleGP as FrogCalculation
+# import FrogCalculationSimpleGP as FrogCalculation
+import FrogCalculationCLGP as FrogCalculation
 
 
 class MyQSplitter(QtGui.QSplitter):
@@ -577,7 +578,7 @@ class TangoDeviceClient(QtGui.QWidget):
             self.frogErrorPlot.setData(self.frogCalc.G_hist)
             self.frogErrorPlot.update()
 
-            self.frogCalcResultImageWidget.setImage(np.transpose(np.abs(self.frogCalc.Esig_w_tau) ** 2))
+            self.frogCalcResultImageWidget.setImage(np.transpose(self.frogCalc.get_reconstructed_intensity()))
             self.frogCalcResultImageWidget.autoRange()
             self.frogCalcResultImageWidget.update()
 

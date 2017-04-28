@@ -562,9 +562,6 @@ class FrogCalculation(object):
         ev.wait()
         mx = cla.max(self.Esig_t_tau_norm_cla).get() * self.N * self.N
 
-        #         Esig_t_tau = self.Esig_t_tau_p_cla.get()
-        #         mx = ((Esig_t_tau*Esig_t_tau.conj()).real).max() * self.N*self.N
-
         X0 = cla.sum(self.X0_cla, queue=self.q).get() / mx
         X1 = cla.sum(self.X1_cla, queue=self.q).get() / mx
         X2 = cla.sum(self.X2_cla, queue=self.q).get() / mx
