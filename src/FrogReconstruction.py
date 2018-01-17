@@ -1,19 +1,10 @@
 '''
-Created on 7 Mar 2016
+Created on 3 May 2016
 
 @author: Filip Lindau
 '''
 # -*- coding:utf-8 -*-
 
-"""
-Created on Oct 1, 2015
-
-@author: Filip Lindau
-"""
-# cameraName = 'b-v0-gunlaser-csdb-0:10000/gunlaser/cameras/jai_test'
-cameraName = 'b-v0-gunlaser-csdb-0:10000/gunlaser/cameras/spectrometer_camera'
-# motorName = 'b-v0-gunlaser-csdb-0:10000/testgun/motors/zst25'
-motorName = 'b-v0-gunlaser-csdb-0:10000/gunlaser/motors/zaber01'
 
 from PyQt4 import QtGui, QtCore
 
@@ -41,7 +32,6 @@ fh.setFormatter(f)
 root.addHandler(fh)
 root.setLevel(logging.CRITICAL)
 
-from AttributeReadThreadClass import AttributeClass
 import pyqtgraph as pq
 
 pq.graphicsItems.GradientEditorItem.Gradients['greyclip2'] = {
@@ -54,61 +44,26 @@ import PyTango as pt
 import threading
 import numpy as np
 
-# import FrogCalculationSimpleGP as FrogCalculation
-import FrogCalculationCLGP as FrogCalculation
+import FrogCalculationSimpleGP as FrogCalculation
+# import FrogCalculationCLGP as FrogCalculation
 
 
-class MyQSplitter(QtGui.QSplitter):
-    def __init__(self, parent=None):
-        QtGui.QSplitter.__init__(self, parent)
-
-    def dragEnterEvent(self, e):
-        root.debug(''.join(('Drag enter event: ', str(e))))
-
-    def resizeEvent(self, e):
-        root.debug(''.join(('Resize event: ', str(e))))
-
-    def changeEvent(self, e):
-        root.debug(''.join(('Change event: ', str(e))))
-
-
-class TangoDeviceClient(QtGui.QWidget):
+class FrogReconstructionClient(QtGui.QWidget):
     """
     Class for scanning a motor while grabbing images to produce a frog trace. It can also analyse the scanned trace
     or saved traces.
     """
-    def __init__(self, cameraName, motorName, parent=None):
+    def __init__(self, parent=None):
         QtGui.QWidget.__init__(self, parent)
-        self.settings = QtCore.QSettings('Maxlab', 'Frog')
+        self.settings = QtCore.QSettings('Maxlab', 'FrogReconstruction')
         #        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.timeVector = None
         self.xData = None
         self.xDataTemp = None
-        self.cameraName = cameraName
-        self.motorName = motorName
 
         t0 = time.clock()
 
-        self.guiLock = threading.Lock()
-
         self.positionOffset = 0.0
-
-        self.devices = {}
-        self.devices['camera'] = pt.DeviceProxy(self.cameraName)
-        self.devices['motor'] = pt.DeviceProxy(self.motorName)
-
-        self.attributes = {}
-        self.attributes['image'] = AttributeClass('image', self.devices['camera'], 0.1)
-        self.attributes['shutter'] = AttributeClass('shutter', self.devices['camera'], 0.5)
-        self.attributes['gain'] = AttributeClass('gain', self.devices['camera'], 0.5)
-        self.attributes['position'] = AttributeClass('position', self.devices['motor'], 0.05)
-        self.attributes['speed'] = AttributeClass('speed', self.devices['motor'], 0.05)
-
-        self.attributes['image'].attrSignal.connect(self.readImage)
-        self.attributes['shutter'].attrSignal.connect(self.readShutter)
-        self.attributes['gain'].attrSignal.connect(self.readGain)
-        self.attributes['position'].attrSignal.connect(self.readPosition)
-        self.attributes['speed'].attrSignal.connect(self.readSpeed)
 
         self.roiData = np.zeros((2, 2))
         self.scanWavelengths = None
@@ -132,70 +87,10 @@ class TangoDeviceClient(QtGui.QWidget):
         self.measureUpdateTimes = np.array([time.time()])
         self.lock = threading.Lock()
 
-        self.running = False
-        self.scanning = False
-        self.moving = False
-        self.moveStart = False
-        self.scanTimer = QtCore.QTimer()
-        self.scanTimer.timeout.connect(self.scanUpdateAction)
-
         self.frogCalc = FrogCalculation.FrogCalculation()
+        self.exportFileLocation = "."
 
         self.setupLayout()
-
-    def readImage(self, data):
-        imData = np.transpose(data.value)
-        self.spectrumImageWidget.setImage(imData, autoRange=False, autoLevels=True)
-        self.roiData = self.ROI.getArrayRegion(imData, self.spectrumImageWidget.getImageItem())
-        self.measureData()
-        self.spectrumImageWidget.update()
-
-    def readShutter(self, data):
-        self.shutterLabel.setText(str(data.value))
-
-    def writeShutter(self):
-        w = self.shutterSpinbox.value()
-        self.attributes['shutter'].attr_write(w)
-        root.debug(''.join(('Write shutter ', str(w))))
-
-    def readGain(self, data):
-        self.gainLabel.setText(str(data.value))
-
-    def writeGain(self):
-        w = self.gainSpinbox.value()
-        self.attributes['gain'].attr_write(w)
-        root.debug(''.join(('Write gain ', str(w))))
-
-    def readPosition(self, data):
-        self.currentPosLabel.setText(QtCore.QString.number(data.value, 'f', 3) + QtCore.QString(" mm"))
-        self.currentPos = data.value
-        if np.abs(self.targetPos - data.value) < 0.001:
-            self.moveStart = False
-            self.moving = False
-
-    def readSpeed(self, data):
-        if data is not None:
-            self.currentSpeedLabel.setText(QtCore.QString.number(data.value, 'f', 3))
-            if self.moveStart is True:
-                if data.value > 0.01:
-                    self.moving = True
-                    self.moveStart = False
-            if self.moving is True:
-                if np.abs(data.value) < 0.001:
-                    self.moving = False
-
-    def writePosition(self):
-        w = self.setPosSpinbox.value()
-        self.attributes['position'].attr_write(w)
-
-    def setAverage(self):
-        self.avgSamples = self.averageSpinbox.value()
-        root.debug("Averging " + str(self.avgSamples) + " samples")
-
-    def setStepSize(self):
-        timeStep = self.stepSizeSpinbox.value() * 1e-3 * 2 / 299792458.0 * 1e15
-        root.debug("Time step " + str(timeStep) + " fs")
-        self.stepSizeLabel.setText("Step size ({0:.1f} fs)".format(timeStep))
 
     def generateWavelengths(self):
         l0 = self.centerWavelengthSpinbox.value() * 1e-9
@@ -211,143 +106,6 @@ class TangoDeviceClient(QtGui.QWidget):
 
         if self.scanWavelengths.shape[0] == self.spectrumData.shape[0]:
             self.plot1.setData(x=self.scanWavelengths, y=self.spectrumData)
-
-    def startScan(self):
-        self.scanData = None
-        self.trendData1 = None
-        self.trendData2 = None
-        self.timeMarginalTmp = 0
-        self.scanTimeData = np.array([])
-        self.timeMarginal = np.array([])
-        self.posData = np.array([])
-        self.scanning = True
-        self.moveStart = True
-        self.running = True
-        self.targetPos = self.startPosSpinbox.value()
-        self.attributes['position'].attr_write(self.targetPos)
-        self.traceSourceLabel.setText('Scan')
-
-    #        self.scanTimer.start(100 * self.avgSamples)
-
-    def stopScan(self):
-        root.debug("Stopping scan")
-        self.running = False
-        self.scanning = False
-        self.scanTimer.stop()
-
-    def exportScan(self):
-        root.debug('Exporting scan data')
-        if self.scanData.max() > 256:
-            data = np.uint8(np.double(self.scanData) / self.scanData.max() * 256)
-        else:
-            data = np.uint8(self.scanData)
-        pathName = str(self.exportFileLocationEdit.text())
-        fileNameBase = ''.join(('frogtrace_', time.strftime('%Y-%m-%d_%Hh%M_'), str(self.exportFilenameEdit.text())))
-        filename = os.path.join(pathName, fileNameBase + '_image.png')
-        im = Image.fromarray(data)
-        im.save(filename)
-        #         imsave(filename, data)
-        data = self.scanTimeData
-        filename = os.path.join(pathName, fileNameBase + '_timevector.txt')
-        np.savetxt(filename, data)
-        data = self.scanWavelengths
-        filename = os.path.join(pathName, fileNameBase + '_wavelengthvector.txt')
-        np.savetxt(filename, data)
-
-    def scanUpdateAction(self):
-        self.scanTimer.stop()
-        while self.running is True:
-            time.sleep(0.02)
-        newPos = self.targetPos + self.stepSizeSpinbox.value()
-        root.debug('New pos: ' + str(newPos))
-        self.attributes['position'].attr_write(newPos)
-        self.targetPos = newPos
-        self.running = True
-        self.moveStart = True
-
-    def measureScanData(self):
-        self.avgData = self.trendData1 / self.avgSamples
-        if self.scanData is None:
-            self.scanData = np.array([self.avgData])
-            self.timeMarginal = np.hstack((self.timeMarginal, self.timeMarginalTmp / self.avgSamples))
-            self.timeMarginalTmp = 0.0
-        else:
-            self.scanData = np.vstack((self.scanData, self.avgData))
-            self.timeMarginal = np.hstack((self.timeMarginal, self.timeMarginalTmp / self.avgSamples))
-            self.timeMarginalTmp = 0.0
-        # pos = np.double(str(self.currentPosLabel.text()))
-        pos = self.currentPos
-        newTime = (pos - self.startPosSpinbox.value()) * 2 * 1e-3 / 299792458.0
-        self.scanTimeData = np.hstack((self.scanTimeData, newTime))
-        self.posData = np.hstack((self.posData, pos * 1e-3))
-        root.debug(''.join(('Time vector: ', str(self.scanTimeData))))
-        root.debug(''.join(('Time marginal: ', str(self.timeMarginal))))
-        x0, x1 = (self.scanWavelengths[0], self.scanWavelengths[-1])
-        y0, y1 = (self.scanTimeData[0], self.scanTimeData[-1])
-        xscale, yscale = (x1 - x0) / self.scanWavelengths.shape[0], (y1 - y0) / self.scanTimeData.shape[0]
-        self.scanImageWidget.setImage(np.transpose(self.scanData), autoRange=False, autoLevels=True,
-                                      scale=[xscale, yscale], pos=[x0, y0])
-        if self.timeUnitsRadio.isChecked() is True:
-            self.plot3.setData(x=self.scanTimeData * 1e12, y=self.timeMarginal)
-        else:
-            self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
-
-    def measureData(self):
-        roiDataFilt = medfilt2d(np.double(self.roiData), 5)
-        self.spectrumData = np.sum(self.roiData, 1) / self.roiData.shape[1]
-        if self.scanWavelengths is None:
-            self.generateWavelengths()
-        if self.scanWavelengths.shape[0] == self.spectrumData.shape[0]:
-            self.plot1.setData(x=self.scanWavelengths, y=self.spectrumData)
-            self.plot1.update()
-
-        #         goodInd = np.arange(self.signalStartIndex.value(), self.signalEndIndex.value() + 1, 1)
-        #         bkgInd = np.arange(self.backgroundStartIndex.value(), self.backgroundEndIndex.value() + 1, 1)
-        #         bkg = self.waveform1[bkgInd].mean()
-        #         bkgPump = self.waveform2[bkgInd].mean()
-        #         autoCorr = (self.waveform1[goodInd] - bkg).sum()
-        #         pump = (self.waveform2[goodInd] - bkgPump).sum()
-        # #        pump = 1.0
-        #         if self.normalizePumpCheck.isChecked() == True:
-        #             try:
-        #                 self.trendData1 = np.hstack((self.trendData1[1:], autoCorr / pump))
-        #             except:
-        #                 pass
-        #         else:
-        #             self.trendData1 = np.hstack((self.trendData1[1:], autoCorr))
-        #         self.plot3.setData(y=self.trendData1)
-
-        # Evaluate the fps
-        t = time.time()
-        if self.measureUpdateTimes.shape[0] > 10:
-            self.measureUpdateTimes = np.hstack((self.measureUpdateTimes[1:], t))
-        else:
-            self.measureUpdateTimes = np.hstack((self.measureUpdateTimes, t))
-        fps = 1 / np.diff(self.measureUpdateTimes).mean()
-        self.fpsLabel.setText(QtCore.QString.number(fps, 'f', 1))
-
-        # If we are running a scan, update the scan data
-        if self.running is True:
-            if self.moving is False and self.moveStart is False:
-                if self.trendData1 is None:
-                    self.trendData1 = self.spectrumData
-                    self.timeMarginalTmp = self.spectrumData.sum()
-                else:
-                    self.trendData1 += self.spectrumData
-                    self.timeMarginalTmp += self.spectrumData.sum()
-                self.currentSample += 1
-                if self.currentSample >= self.avgSamples:
-                    self.running = False
-                    self.measureScanData()
-                    self.trendData1 = None
-                    self.currentSample = 0
-                    self.scanUpdateAction()
-
-    def xAxisUnitsToggle(self):
-        if self.timeUnitsRadio.isChecked() is True:
-            self.plot3.setData(x=self.scanTimeData * 1e12, y=self.timeMarginal)
-        else:
-            self.plot3.setData(x=self.posData * 1e3, y=self.timeMarginal)
 
     def updateFrogPlotView(self):
         self.frogResultViewbox.setGeometry(self.frogResultPlotitem.vb.sceneBoundingRect())
@@ -588,7 +346,7 @@ class TangoDeviceClient(QtGui.QWidget):
             self.calculatePulseParameters()
 
     def loadFrogTrace(self):
-        fileLocation = str(self.exportFileLocationEdit.text())
+        fileLocation = self.exportFileLocation
         filename = str(QtGui.QFileDialog.getOpenFileName(self, 'Select frog trace', fileLocation, 'frogtrace_*.png'))
         root.debug(''.join(('File selected: ', str(filename))))
 
@@ -635,105 +393,8 @@ class TangoDeviceClient(QtGui.QWidget):
         # self.updateFrogRoi()
         self.traceSourceLabel.setText("Scan")
 
-    def tabChanged(self, i):
-        root.debug(''.join(('Tab changed: ', str(i))))
-        root.debug(''.join(('Found ', str(self.plotLayout.count()), ' widgets')))
-        # Remove all widgets:
-        for widgetInd in range(self.plotLayout.count()):
-            layItem = self.plotLayout.itemAt(0)
-            if type(layItem) is QtGui.QVBoxLayout:
-                root.debug(''.join(('Found ', str(layItem.count()), ' inner widgets')))
-                #                 self.frogLayout.removeWidget(self.plotWidget2)
-                #                 self.frogLayout.removeWidget(self.frogImageWidget)
-                for wInd2 in range(layItem.count()):
-                    layItem.takeAt(0)
-
-            self.plotLayout.takeAt(0)
-        self.plotLayout.removeWidget(self.timemarginalPlotWidget)
-
-        # Re-populate
-        if i == 0 or i == 1:
-            self.plotLayout.addWidget(self.spectrumImageWidget)
-            self.plotLayout.addWidget(self.spectrumPlotWidget)
-            self.frogLayout.addWidget(self.scanImageWidget)
-            #             self.invisibleLayout.addWidget(self.plotWidget2)
-            #             self.invisibleLayout.addWidget(self.plotWidget)
-            self.frogLayout.addWidget(self.timemarginalPlotWidget)
-            self.plotLayout.addLayout(self.frogLayout)
-            self.timemarginalPlotWidget.setVisible(True)
-            self.spectrumPlotWidget.setVisible(True)
-            self.spectrumImageWidget.setVisible(True)
-            self.scanImageWidget.setVisible(True)
-            self.scanImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
-            self.frogErrorWidget.setVisible(False)
-            self.frogResultWidget.setVisible(False)
-            self.frogImageWidget.setVisible(False)
-            self.frogRoiImageWidget.setVisible(False)
-            self.frogCalcImageWidget.setVisible(False)
-            self.frogCalcResultImageWidget.setVisible(False)
-            self.frogRoi.setVisible(False)
-
-            self.attributes['image'].unpause_read()
-            self.attributes['position'].unpause_read()
-            self.attributes['speed'].unpause_read()
-
-        elif i == 2:
-            self.timemarginalPlotWidget.setVisible(False)
-            self.spectrumPlotWidget.setVisible(False)
-            self.spectrumImageWidget.setVisible(False)
-            self.scanImageWidget.setVisible(False)
-            self.frogErrorWidget.setVisible(True)
-            self.frogRoiImageWidget.setVisible(True)
-            self.frogImageWidget.setVisible(True)
-            self.frogRoi.setVisible(True)
-            self.frogResultWidget.setVisible(True)
-            self.frogCalcImageWidget.setVisible(True)
-            self.frogCalcResultImageWidget.setVisible(True)
-
-            self.frogLayout.addWidget(self.frogImageWidget)
-            self.frogLayout.addWidget(self.frogRoiImageWidget)
-            self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
-            self.plotLayout.addLayout(self.frogLayout)
-            self.plotLayout.setStretchFactor(self.frogLayout, 3)
-            #             self.plotLayout.addWidget(self.frogImageWidget)
-            #             self.plotLayout.setStretchFactor(self.frogImageWidget, 2)
-            #             self.plotLayout.addWidget(self.frogRoiImageWidget)
-            #             self.plotLayout.setStretchFactor(self.frogRoiImageWidget, 2)
-            #             self.plotLayout.addWidget(self.frogErrorWidget)
-            #             self.plotLayout.setStretchFactor(self.frogErrorWidget, 1)
-            self.frogLayout2.addWidget(self.frogCalcImageWidget)
-            self.frogLayout2.addWidget(self.frogCalcResultImageWidget)
-            self.plotLayout.addLayout(self.frogLayout2)
-            self.plotLayout.setStretchFactor(self.frogLayout2, 2)
-            self.plotLayout.addWidget(self.frogResultWidget)
-            self.plotLayout.setStretchFactor(self.frogResultWidget, 3)
-
-            self.attributes['image'].pause_read()
-            self.attributes['position'].pause_read()
-            self.attributes['speed'].pause_read()
-
     def closeEvent(self, event):
-        for a in self.attributes.itervalues():
-            root.debug('Stopping' + str(a.name))
-            a.stop_read()
-        for a in self.attributes.itervalues():
-            a.read_thread.join()
 
-        self.settings.setValue('startPos', self.startPosSpinbox.value())
-        self.settings.setValue('setPos', self.setPosSpinbox.value())
-        self.settings.setValue('averages', self.averageSpinbox.value())
-        self.settings.setValue('step', self.stepSizeSpinbox.value())
-        self.settings.setValue('exportFilename', str(self.exportFilenameEdit.text()))
-        self.settings.setValue('exportFileLocation', str(self.exportFileLocationEdit.text()))
-        self.settings.setValue('xUnitTime', self.timeUnitsRadio.isChecked())
-        self.settings.setValue('dispersion', self.dispersionSpinbox.value())
-        self.settings.setValue('centerWavelength', self.centerWavelengthSpinbox.value())
-        root.debug(''.join(('roiPos: ', str(self.ROI.pos()))))
-        root.debug(''.join(('roiSize: ', str(self.ROI.size()))))
-        self.settings.setValue('roiPosX', np.float(self.ROI.pos()[0]))
-        self.settings.setValue('roiPosY', np.float(self.ROI.pos()[1]))
-        self.settings.setValue('roiSizeW', np.float(self.ROI.size()[0]))
-        self.settings.setValue('roiSizeH', np.float(self.ROI.size()[1]))
         root.debug(''.join(('Window size: ', str(self.size()))))
         root.debug(''.join(('Window pos: ', str(self.pos().y()))))
         self.settings.setValue('windowSizeW', np.int(self.size().width()))
@@ -997,222 +658,8 @@ class TangoDeviceClient(QtGui.QWidget):
         root.debug('Setting up layout')
         self.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.layout = QtGui.QVBoxLayout(self)
-        self.tabWidget = QtGui.QTabWidget()
-        self.tabWidget.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum)
-        self.gridLayout1 = QtGui.QGridLayout()
-        self.gridLayout2 = QtGui.QGridLayout()
-        self.gridLayout3 = QtGui.QGridLayout()
-        self.gridLayout4 = QtGui.QGridLayout()
-        self.gridLayout5 = QtGui.QGridLayout()
-
-        self.fpsLabel = QtGui.QLabel()
-        self.averageSpinbox = QtGui.QSpinBox()
-        self.averageSpinbox.setMaximum(100)
-        self.averageSpinbox.setValue(self.settings.value('averages', 5).toInt()[0])
-        self.avgSamples = self.settings.value('averages', 5).toInt()[0]
-        self.averageSpinbox.editingFinished.connect(self.setAverage)
-        self.setAverage()
-
-        self.startPosSpinbox = QtGui.QDoubleSpinBox()
-        self.startPosSpinbox.setDecimals(3)
-        self.startPosSpinbox.setMaximum(2000000)
-        self.startPosSpinbox.setMinimum(-2000000)
-        self.startPosSpinbox.setSuffix(" mm")
-        self.startPosSpinbox.setValue(self.settings.value('startPos', 0.0).toDouble()[0])
-        self.stepSizeLabel = QtGui.QLabel("Step size")
-        self.stepSizeSpinbox = QtGui.QDoubleSpinBox()
-        self.stepSizeSpinbox.setDecimals(4)
-        self.stepSizeSpinbox.setMaximum(2000000)
-        self.stepSizeSpinbox.setMinimum(-2000000)
-        self.stepSizeSpinbox.setSuffix(" mm")
-        self.stepSizeSpinbox.editingFinished.connect(self.setStepSize)
-        self.stepSizeSpinbox.setValue(self.settings.value('step', 0.05).toDouble()[0])
-        self.setStepSize()
-        self.setPosSpinbox = QtGui.QDoubleSpinBox()
-        self.setPosSpinbox.setDecimals(3)
-        self.setPosSpinbox.setMaximum(2000000)
-        self.setPosSpinbox.setMinimum(-2000000)
-        self.setPosSpinbox.setValue(63.7)
-        self.setPosSpinbox.setSuffix(" mm")
-        self.setPosSpinbox.setValue(self.settings.value('setPos', 63).toDouble()[0])
-        self.setPosSpinbox.editingFinished.connect(self.writePosition)
-        self.currentPosLabel = QtGui.QLabel()
-        f = self.currentPosLabel.font()
-        f.setPointSize(28)
-        currentPosTextLabel = QtGui.QLabel('Current pos ')
-        currentPosTextLabel.setFont(f)
-        self.currentPosLabel.setFont(f)
-        self.currentSpeedLabel = QtGui.QLabel()
-        #        self.currentSpeedLabel.setFont(f)
-        self.exportFilenameEdit = QtGui.QLineEdit()
-        self.exportFilenameEdit.setText(self.settings.value('exportFilename', '').toString())
-        self.exportFileLocationEdit = QtGui.QLineEdit()
-        self.exportFileLocationEdit.setText(self.settings.value('exportFileLocation', './').toString())
-
-        self.centerWavelengthSpinbox = QtGui.QDoubleSpinBox()
-        self.centerWavelengthSpinbox.setMinimum(200)
-        self.centerWavelengthSpinbox.setMaximum(2000)
-        self.centerWavelengthSpinbox.setValue(self.settings.value('centerWavelength', 400).toDouble()[0])
-        self.centerWavelengthSpinbox.editingFinished.connect(self.generateWavelengths)
-
-        self.dispersionSpinbox = QtGui.QDoubleSpinBox()
-        self.dispersionSpinbox.setMinimum(-10)
-        self.dispersionSpinbox.setMaximum(10)
-        self.dispersionSpinbox.setDecimals(4)
-        self.dispersionSpinbox.setValue(self.settings.value('dispersion', 0.03).toDouble()[0])
-        self.dispersionSpinbox.editingFinished.connect(self.generateWavelengths)
-
-        self.shutterLabel = QtGui.QLabel()
-        self.shutterSpinbox = QtGui.QDoubleSpinBox()
-        self.shutterSpinbox.setMinimum(0)
-        self.shutterSpinbox.setMaximum(1000000)
-        self.shutterSpinbox.editingFinished.connect(self.writeShutter)
-
-        self.gainLabel = QtGui.QLabel()
-        self.gainSpinbox = QtGui.QDoubleSpinBox()
-        self.gainSpinbox.setMinimum(0)
-        self.gainSpinbox.setMaximum(100000)
-        self.gainSpinbox.editingFinished.connect(self.writeGain)
-
-        self.normalizePumpCheck = QtGui.QCheckBox('Normalize')
-        self.timeUnitsRadio = QtGui.QRadioButton('ps')
-        self.posUnitsRadio = QtGui.QRadioButton('mm')
-        if self.settings.value('xUnitTime', True).toBool() is True:
-            self.timeUnitsRadio.setChecked(True)
-        else:
-            self.posUnitsRadio.setChecked(True)
-        self.timeUnitsRadio.toggled.connect(self.xAxisUnitsToggle)
-
-        self.startButton = QtGui.QPushButton('Start')
-        self.startButton.clicked.connect(self.startScan)
-        self.stopButton = QtGui.QPushButton('Stop')
-        self.stopButton.clicked.connect(self.stopScan)
-        self.exportButton = QtGui.QPushButton('Export')
-        self.exportButton.clicked.connect(self.exportScan)
-
-        self.gridLayout1.addWidget(QtGui.QLabel("Start position"), 0, 0)
-        self.gridLayout1.addWidget(self.startPosSpinbox, 0, 1)
-        self.gridLayout1.addWidget(self.stepSizeLabel, 1, 0)
-        self.gridLayout1.addWidget(self.stepSizeSpinbox, 1, 1)
-        self.gridLayout1.addWidget(QtGui.QLabel("Averages"), 2, 0)
-        self.gridLayout1.addWidget(self.averageSpinbox, 2, 1)
-        self.gridLayout1.addWidget(QtGui.QLabel("Normalize"), 3, 0)
-        self.gridLayout1.addWidget(self.normalizePumpCheck, 3, 1)
-        self.gridLayout1.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
-                                                         QtGui.QSizePolicy.MinimumExpanding), 4, 0)
-        self.gridLayout2.addWidget(QtGui.QLabel("Set position"), 0, 0)
-        self.gridLayout2.addWidget(self.setPosSpinbox, 0, 1)
-        self.gridLayout2.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
-                                                         QtGui.QSizePolicy.MinimumExpanding), 1, 0)
-        self.gridLayout2.addWidget(QtGui.QLabel("Start scan"), 2, 0)
-        self.gridLayout2.addWidget(self.startButton, 2, 1)
-        self.gridLayout2.addWidget(QtGui.QLabel("Stop scan"), 3, 0)
-        self.gridLayout2.addWidget(self.stopButton, 3, 1)
-        self.gridLayout2.addWidget(QtGui.QLabel("Export scan"), 4, 0)
-        self.gridLayout2.addWidget(self.exportButton, 4, 1)
-        self.gridLayout3.addWidget(currentPosTextLabel, 0, 0)
-        self.gridLayout3.addWidget(self.currentPosLabel, 0, 1)
-        self.gridLayout3.addWidget(QtGui.QLabel("Current speed"), 1, 0)
-        self.gridLayout3.addWidget(self.currentSpeedLabel, 1, 1)
-        self.gridLayout3.addWidget(QtGui.QLabel("Filename: frogtrace_yyyy-mm-dd_hh-mm_"), 2, 0)
-        self.gridLayout3.addWidget(self.exportFilenameEdit, 2, 1)
-        self.gridLayout3.addWidget(QtGui.QLabel("File location: "), 3, 0)
-        self.gridLayout3.addWidget(self.exportFileLocationEdit, 3, 1)
-
-        self.gridLayout5.addWidget(QtGui.QLabel("X-axis units"), 0, 0)
-        self.gridLayout5.addWidget(self.timeUnitsRadio, 0, 1)
-        self.gridLayout5.addWidget(self.posUnitsRadio, 1, 1)
-        self.gridLayout5.addWidget(QtGui.QLabel("FPS"), 2, 0)
-        self.gridLayout5.addWidget(self.fpsLabel, 2, 1)
-
-        root.debug('Plot widgets')
-
-        self.spectrumImageWidget = pq.ImageView()
-        self.spectrumImageWidget.ui.histogram.gradient.loadPreset('thermal')
-        self.ROI = pq.RectROI([0, 300], [600, 20], pen=(0, 9))
-        self.ROI.sigRegionChanged.connect(self.generateWavelengths)
-        self.ROI.blockSignals(True)
-
-        roiPosX = self.settings.value('roiPosX', 0).toDouble()[0]
-        roiPosY = self.settings.value('roiPosY', 0).toDouble()[0]
-        root.debug(''.join(('roiPos: ', str(roiPosX))))
-        roiSizeW = self.settings.value('roiSizeW', 0).toDouble()[0]
-        roiSizeH = self.settings.value('roiSizeH', 0).toDouble()[0]
-        root.debug(''.join(('roiSize: ', str(roiSizeW), 'x', str(roiSizeH))))
-        self.ROI.setPos([roiPosX, roiPosY], update=True)
-        self.ROI.setSize([roiSizeW, roiSizeH], update=True)
-        self.spectrumImageWidget.getView().addItem(self.ROI)
-        self.spectrumImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
-        self.spectrumImageWidget.getView().setAspectLocked(False)
-        self.ROI.blockSignals(False)
-
-        # plt = pq.PlotItem(labels={'bottom': ('Spectrum', 'm'), 'left': ('Time delay', 's')})
-        self.spectrumPlotWidget = pq.PlotWidget(useOpenGL=True, labels={'bottom': ('Spectrum', 'm')})
-        self.plot1 = self.spectrumPlotWidget.plot()
-        self.plot1.setPen((200, 25, 10))
-        self.plot2 = self.spectrumPlotWidget.plot()
-        self.plot2.setPen((10, 200, 25))
-        self.plot1.antialiasing = True
-        self.spectrumPlotWidget.setAntialiasing(True)
-        self.spectrumPlotWidget.showGrid(True, True)
-        self.spectrumPlotWidget.setMinimumWidth(200)
-        self.spectrumPlotWidget.setMaximumWidth(500)
-        self.spectrumPlotWidget.setSizePolicy(QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Expanding)
-
-        self.scanImageWidget = pq.ImageView()
-        self.scanImageWidget.ui.histogram.gradient.loadPreset('thermal')
-        self.scanImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
-        self.scanImageWidget.getView().setAspectLocked(False)
-
-        self.timemarginalPlotWidget = pq.PlotWidget(useOpenGL=True, labels={'bottom': ('Time delay', 's')})
-        self.plot3 = self.timemarginalPlotWidget.plot()
-        self.plot3.setPen((50, 99, 200))
-        self.timemarginalPlotWidget.setAntialiasing(True)
-        self.timemarginalPlotWidget.showGrid(True, True)
-        self.timemarginalPlotWidget.setMaximumHeight(200)
-        self.timemarginalPlotWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Maximum)
-
-        self.plotLayout = QtGui.QHBoxLayout()
-        self.plotLayout.addWidget(self.spectrumImageWidget)
-        self.plotLayout.addWidget(self.spectrumPlotWidget)
-
-        scanLay = QtGui.QHBoxLayout()
-        scanLay.addLayout(self.gridLayout1)
-        scanLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
-        scanLay.addLayout(self.gridLayout2)
-        scanLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
-        scanLay.addLayout(self.gridLayout4)
-        scanLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
-        scanLay.addLayout(self.gridLayout3)
-        scanLay.addSpacerItem(QtGui.QSpacerItem(30, 20, QtGui.QSizePolicy.Minimum, QtGui.QSizePolicy.Minimum))
-        scanLay.addLayout(self.gridLayout5)
-        scanLay.addSpacerItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
-
-        cameraLay = QtGui.QHBoxLayout()
-        self.camGridLayout1 = QtGui.QGridLayout()
-        self.camGridLayout1.addWidget(QtGui.QLabel("Center wavelength (nm)"), 0, 0)
-        self.camGridLayout1.addWidget(self.centerWavelengthSpinbox, 0, 1)
-        self.camGridLayout1.addWidget(QtGui.QLabel("Dispersion (nm/px)"), 1, 0)
-        self.camGridLayout1.addWidget(self.dispersionSpinbox, 1, 1)
-        self.camGridLayout1.addWidget(QtGui.QLabel("0.086 for IR FROG, 0.018 for UV FROG"), 1, 2)
-        self.camGridLayout1.addWidget(QtGui.QLabel("Shutter time (us)"), 2, 0)
-        self.camGridLayout1.addWidget(self.shutterSpinbox, 2, 1)
-        self.camGridLayout1.addWidget(self.shutterLabel, 2, 2)
-        self.camGridLayout1.addWidget(QtGui.QLabel("Gain"), 3, 0)
-        self.camGridLayout1.addWidget(self.gainSpinbox, 3, 1)
-        self.camGridLayout1.addWidget(self.gainLabel, 3, 2)
-        self.camGridLayout1.addItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.Minimum,
-                                                            QtGui.QSizePolicy.MinimumExpanding), 4, 0)
-        cameraLay.addLayout(self.camGridLayout1)
-        cameraLay.addSpacerItem(
-            QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
 
         self.setupFrogLayout()
-
-        self.frogLayout = QtGui.QVBoxLayout()
-        self.frogLayout.addWidget(self.scanImageWidget)
-        self.frogLayout.addWidget(self.timemarginalPlotWidget)
-        self.plotLayout.addLayout(self.frogLayout)
 
         frogLay = QtGui.QHBoxLayout()
         frogLay.addLayout(self.frogGridLayout1)
@@ -1228,18 +675,23 @@ class TangoDeviceClient(QtGui.QWidget):
         frogLay.addLayout(self.frogGridLayout5)
         frogLay.addSpacerItem(QtGui.QSpacerItem(20, 20, QtGui.QSizePolicy.MinimumExpanding, QtGui.QSizePolicy.Minimum))
 
-        self.tabCameraWidget = QtGui.QWidget()
-        self.tabCameraWidget.setLayout(cameraLay)
-        self.tabScanWidget = QtGui.QWidget()
-        self.tabScanWidget.setLayout(scanLay)
-        self.tabFrogWidget = QtGui.QWidget()
-        self.tabFrogWidget.setLayout(frogLay)
-        self.tabWidget.addTab(self.tabScanWidget, 'Scan')
-        self.tabWidget.addTab(self.tabCameraWidget, 'Camera')
-        self.tabWidget.addTab(self.tabFrogWidget, 'Frog')
-        self.tabWidget.currentChanged.connect(self.tabChanged)
-        self.layout.addWidget(self.tabWidget)
-        #         self.layout.addLayout(scanLay)
+        self.plotLayout = QtGui.QHBoxLayout()
+
+        self.frogLayout = QtGui.QVBoxLayout()
+
+        self.frogLayout.addWidget(self.frogImageWidget)
+        self.frogLayout.addWidget(self.frogRoiImageWidget)
+        self.frogImageWidget.setSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        self.plotLayout.addLayout(self.frogLayout)
+        self.plotLayout.setStretchFactor(self.frogLayout, 3)
+        self.frogLayout2.addWidget(self.frogCalcImageWidget)
+        self.frogLayout2.addWidget(self.frogCalcResultImageWidget)
+        self.plotLayout.addLayout(self.frogLayout2)
+        self.plotLayout.setStretchFactor(self.frogLayout2, 2)
+        self.plotLayout.addWidget(self.frogResultWidget)
+        self.plotLayout.setStretchFactor(self.frogResultWidget, 3)
+
+        self.layout.addLayout(frogLay)
         self.layout.addLayout(self.plotLayout)
 
         self.invisibleLayout = QtGui.QHBoxLayout()
@@ -1254,13 +706,11 @@ class TangoDeviceClient(QtGui.QWidget):
             windowPosY = 200
         self.setGeometry(windowPosX, windowPosY, windowSizeW, windowSizeH)
 
-        self.tabChanged(0)
-
         self.show()
 
 
 if __name__ == '__main__':
     app = QtGui.QApplication(sys.argv)
-    myapp = TangoDeviceClient(cameraName, motorName)
+    myapp = FrogReconstructionClient()
     myapp.show()
     sys.exit(app.exec_())

@@ -30,7 +30,7 @@ f = logging.Formatter("%(asctime)s - %(module)s.   %(funcName)s - %(levelname)s 
 fh = logging.StreamHandler()
 fh.setFormatter(f)
 root.addHandler(fh)
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.CRITICAL)
 
 
 class FrogCalculation(object):
@@ -177,7 +177,8 @@ class FrogCalculation(object):
         self.shiftinds_neg = (i + i2 - n_t / 2) % n_t + i2 * n_t
         self.shiftinds_pos = (-n_t / 2 + i - i2) % n_t + i2 * n_t
 
-    def load_frog_trace2(self, filename, thr=0.0, l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1):
+    def load_frog_trace2(self, filename, thr=0.0,
+                         l_start_pixel=0, l_stop_pixel=-1, t_start_pixel=0, t_stop_pixel=-1, filter_img=True):
         """
         Load a frog trace image from file and condition it to the internal w, tau grid (by calling
         condition_frog_trace). The variables self.w and self.tau must be set up first (be e.g. calling
@@ -208,7 +209,11 @@ class FrogCalculation(object):
         if l_stop_pixel == -1:
             l_stop_pixel = pic_n.shape[1] - 1
 
-        picF = self.filter_frog_trace(pic_n, 3, thr)
+        if filter_img is True:
+            picF = self.filter_frog_trace(pic_n, 3, thr)
+        else:
+            picF = pic_n.copy() - thr
+            picF[picF < 0.0] = 0.0
 
         self.condition_frog_trace2(picF[t_start_pixel:t_stop_pixel, l_start_pixel:l_stop_pixel],
                                   l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
