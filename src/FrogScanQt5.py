@@ -286,7 +286,7 @@ class TangoDeviceClient(QtWidgets.QWidget):
             self.attributes["image"].read_thread.join(0.5)
             self.attributes["shutter"].read_thread.join(0.5)
             self.attributes["gain"].read_thread.join(0.5)
-        camera_tango_name = self.camera_select_lineedit.text()
+        camera_tango_name = str(self.camera_select_lineedit.text())
         root.debug("Connecting to {0}".format(camera_tango_name))
         try:
             new_device = pt.DeviceProxy(camera_tango_name)
@@ -309,7 +309,7 @@ class TangoDeviceClient(QtWidgets.QWidget):
             self.attributes["speed"].stop_read()
             self.attributes["position"].read_thread.join(0.5)
             self.attributes["speed"].read_thread.join(0.5)
-        motor_tango_name = self.motor_select_lineedit.text()
+        motor_tango_name = str(self.motor_select_lineedit.text())
         root.debug("Connecting to {0}".format(motor_tango_name))
         try:
             new_device = pt.DeviceProxy(motor_tango_name)
@@ -705,35 +705,39 @@ class TangoDeviceClient(QtWidgets.QWidget):
             root.debug("bkg_img shape {0}".format(bkg_img.shape))
             roi_img = bkg_img[y0_ind:y1_ind, x0_ind:x1_ind]
             root.debug("roi_img bkg subtracted")
-            roi_img = roi_img / roi_img.max()
-            root.debug(''.join(('Roi pos: ', str(x0), 'm x ', str(y0), 's')))
-            root.debug(''.join(('Roi size: ', str(x1 - x0), 'm x ', str(y1 - y0), 's')))
-            dt_est = self.estimate_frog_dt(self.frog_n_spinbox.value(), y1 - y0, x0, x1)
-            self.frog_dt_label.setText('dt (fs) [{0:.1f} - {1:.1f}]'.format(dt_est[0] * 1e15, dt_est[1] * 1e15))
-            root.debug('Slice complete')
-            thr = np.maximum(self.frog_threshold_spinbox.value() - bkg.mean() / self.frog_raw_data.max(), 0)
-            root.debug('Threshold: ' + str(thr))
-            kernel = self.frog_kernel_median_spinbox.value()
-            root.debug('Starting medfilt...')
-            if kernel > 1:
-                filtered_img = medfilt2d(roi_img, kernel) - thr
-            else:
-                filtered_img = roi_img - thr
-            gauss_kernel = self.frog_kernel_gaussian_spinbox.value()
-            if gauss_kernel > 1:
-                filtered_img = gaussian_filter(filtered_img, gauss_kernel)
+            root.debug("roi_img shape {0}".format(roi_img.shape))
+            try:
+                roi_img = roi_img / roi_img.max()
+                root.debug(''.join(('Roi pos: ', str(x0), 'm x ', str(y0), 's')))
+                root.debug(''.join(('Roi size: ', str(x1 - x0), 'm x ', str(y1 - y0), 's')))
+                dt_est = self.estimate_frog_dt(self.frog_n_spinbox.value(), y1 - y0, x0, x1)
+                self.frog_dt_label.setText('dt (fs) [{0:.1f} - {1:.1f}]'.format(dt_est[0] * 1e15, dt_est[1] * 1e15))
+                root.debug('Slice complete')
+                thr = np.maximum(self.frog_threshold_spinbox.value() - bkg.mean() / self.frog_raw_data.max(), 0)
+                root.debug('Threshold: ' + str(thr))
+                kernel = self.frog_kernel_median_spinbox.value()
+                root.debug('Starting medfilt...')
+                if kernel > 1:
+                    filtered_img = medfilt2d(roi_img, kernel) - thr
+                else:
+                    filtered_img = roi_img - thr
+                gauss_kernel = self.frog_kernel_gaussian_spinbox.value()
+                if gauss_kernel > 1:
+                    filtered_img = gaussian_filter(filtered_img, gauss_kernel)
 
-            root.debug('Filtering complete')
-            filtered_img[filtered_img < 0.0] = 0.0
-            self.frog_filtered_data = filtered_img
-            root.debug('Threshold complete')
-            x0, x1 = (self.frog_wavelengths[0], self.frog_wavelengths[-1])
-            y0, y1 = (self.frog_time_data[0], self.frog_time_data[-1])
-            xscale, yscale = (x1 - x0) / self.frog_wavelengths.shape[0], (y1 - y0) / self.frog_time_data.shape[0]
-            self.frog_roi_image_widget.setImage(filtered_img.transpose(), scale=[xscale, yscale], pos=[x0, y0])
-            root.debug('Set image complete')
-            self.frog_roi_image_widget.autoRange()
-            root.debug('Autorange complete')
+                root.debug('Filtering complete')
+                filtered_img[filtered_img < 0.0] = 0.0
+                self.frog_filtered_data = filtered_img
+                root.debug('Threshold complete')
+                x0, x1 = (self.frog_wavelengths[0], self.frog_wavelengths[-1])
+                y0, y1 = (self.frog_time_data[0], self.frog_time_data[-1])
+                xscale, yscale = (x1 - x0) / self.frog_wavelengths.shape[0], (y1 - y0) / self.frog_time_data.shape[0]
+                self.frog_roi_image_widget.setImage(filtered_img.transpose(), scale=[xscale, yscale], pos=[x0, y0])
+                root.debug('Set image complete')
+                self.frog_roi_image_widget.autoRange()
+                root.debug('Autorange complete')
+            except ValueError:
+                return
 
     def fit_frog_roi(self):
         root.debug("Entering fit_frog_roi")
@@ -741,6 +745,8 @@ class TangoDeviceClient(QtWidgets.QWidget):
             x0 = np.min(self.frog_wavelengths)
             y0 = np.min(self.frog_time_data)
         except NameError:
+            return
+        except ValueError:
             return
         dx = np.abs(self.frog_wavelengths[-1] - self.frog_wavelengths[0])
         dy = np.abs(self.frog_time_data[-1] - self.frog_time_data[0])
