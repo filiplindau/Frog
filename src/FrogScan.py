@@ -554,8 +554,8 @@ class TangoDeviceClient(QtGui.QWidget):
                        str(dt))
 
             self.frogCalc.init_pulsefield_random(N, dt, l0)
-            self.frogCalc.condition_frog_trace2(frogImg, l_start, l_stop, tau_start, tau_stop, N,
-                                                thr=0*self.frogThresholdSpinbox.value())
+            self.frogCalc.condition_frog_trace(frogImg, l_start, l_stop, tau_start, tau_stop, N,
+                                               thr=0*self.frogThresholdSpinbox.value())
 
             root.debug('frogImg shape: ' + str(frogImg.shape) + ', 10 values: ' + str(frogImg[0, 0:10]))
             root.debug('I_w_tau shape: ' + str(self.frogCalc.I_w_tau.shape) + ', 10 values: ' +
