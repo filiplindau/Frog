@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="sf57">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.87543831</B>
+		<C>0.0141749518</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.37375749</B>
+		<C>0.0640509927</C>
+	</sellmeier>
+	<sellmeier>
+		<B>2.30001797</B>
+		<C>177.389795</C>
+	</sellmeier>	
+</material>

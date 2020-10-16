@@ -222,7 +222,7 @@ class FrogCalculation(object):
                                   l_data[l_start_pixel], l_data[l_stop_pixel], t_data[t_start_pixel],
                                   t_data[t_stop_pixel], self.Et.shape[0], thr, False)
 
-    def condition_frog_trace2(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15, filter_img=True):
+    def condition_frog_trace(self, Idata, l_start, l_stop, tau_start, tau_stop, n_frog=256, thr=0.15, filter_img=True):
         """ Take the measured intensity data and interpolate it to the
         internal w, tau grid. The variables self.w and self.tau must be set up
         first (be e.g. calling one of the init_pulsefield functions).

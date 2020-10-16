@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="k5">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.08511833</B>
+		<C>0.00661099503</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.199562005</B>
+		<C>0.024110866</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.930511663</B>
+		<C>111.982777</C>
+	</sellmeier>	
+</material>

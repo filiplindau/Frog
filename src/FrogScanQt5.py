@@ -9,7 +9,10 @@ from PyQt5 import QtGui, QtCore, QtWidgets
 
 from scipy.signal import medfilt2d
 from scipy.ndimage import gaussian_filter
-from scipy.misc import imread
+try:
+    from scipy.misc import imread
+except ImportError:
+    from imageio import imread
 from PIL import Image
 
 import time
@@ -245,21 +248,24 @@ class TangoDeviceClient(QtWidgets.QWidget):
         root.debug(''.join(('Write gain ', str(w))))
 
     def read_position(self, data):
-        self.current_pos_label.setText("{0:.3f} mm".format(data.value))
-        self.current_pos = data.value
-        if np.abs(self.target_pos - data.value) < 0.001:
-            self.moving = False
+        if data is not None:
+            if data.value is not None:
+                self.current_pos_label.setText("{0:.3f} mm".format(data.value))
+                self.current_pos = data.value
+                if np.abs(self.target_pos - data.value) < 0.001:
+                    self.moving = False
 
     def read_speed(self, data):
         if data is not None:
-            self.current_speed_label.setText("{0:.3f}".format(data.value))
-            if self.move_start is True:
-                if data.value > 0.01:
-                    self.moving = True
-                    self.move_start = False
-            if self.moving is True:
-                if np.abs(data.value) < 0.001:
-                    self.moving = False
+            if data.value is not None:
+                self.current_speed_label.setText("{0:.3f}".format(data.value))
+                if self.move_start is True:
+                    if data.value > 0.01:
+                        self.moving = True
+                        self.move_start = False
+                if self.moving is True:
+                    if np.abs(data.value) < 0.001:
+                        self.moving = False
 
     def write_position(self):
         w = self.set_pos_spinbox.value()

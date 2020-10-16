@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="kzfs8">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.62693651</B>
+		<C>0.010880863</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.24369876</B>
+		<C>0.0494207753</C>
+	</sellmeier>
+	<sellmeier>
+		<B>1.62007141</B>
+		<C>131.009163</C>
+	</sellmeier>	
+</material>

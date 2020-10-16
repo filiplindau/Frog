@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="fk51a">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>0.971247817</B>
+		<C>0.00472301995</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.216901417</B>
+		<C>0.0153575612</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.904651666</B>
+		<C>168.68133</C>
+	</sellmeier>	
+</material>

@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<material name="caco3_o">
+	<!-- Sellmeier coefficients A + B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<A>0.73358749</A>
+	</sellmeier>
+	<sellmeier>
+		<B>0.96464345</B>
+		<C>0.0194325203</C>
+	</sellmeier>
+	<sellmeier>
+		<B>1.82831454</B>
+		<C>120</C>
+	</sellmeier>
+</material>

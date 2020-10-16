@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="ssk2">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.4306027</B>
+		<C>0.00823982975</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.153150554</B>
+		<C>0.0333736841</C>
+	</sellmeier>
+	<sellmeier>
+		<B>1.01390904</B>
+		<C>106.870822</C>
+	</sellmeier>	
+</material>

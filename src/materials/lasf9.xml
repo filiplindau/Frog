@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="lasf9">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>2.00029547</B>
+		<C>0.0121426017</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.298926886</B>
+		<C>0.0538736236</C>
+	</sellmeier>
+	<sellmeier>
+		<B>1.80691843</B>
+		<C>156.530829</C>
+	</sellmeier>	
+</material>

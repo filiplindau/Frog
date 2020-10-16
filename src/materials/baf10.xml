@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="baf10">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.5851495</B>
+		<C>0.00926681282</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.143559385</B>
+		<C>0.0424489805</C>
+	</sellmeier>
+	<sellmeier>
+		<B>1.08521269</B>
+		<C>105.613573</C>
+	</sellmeier>	
+</material>

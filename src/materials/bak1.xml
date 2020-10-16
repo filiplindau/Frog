@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="bak1">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.12365662</B>
+		<C>0.00644742752</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.309276848</B>
+		<C>0.0222284402</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.881511957</B>
+		<C>107.297751</C>
+	</sellmeier>	
+</material>

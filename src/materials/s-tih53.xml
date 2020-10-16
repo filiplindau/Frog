@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<material name="s-tih53">
+	<!-- Sellmeier coefficients B*l^2/(l^2-C), wavelength l in um -->
+	<sellmeier>
+		<B>1.87904886</B>
+		<C>0.014412177</C>
+	</sellmeier>
+	<sellmeier>
+		<B>0.369719775</B>
+		<C>0.063881799</C>
+	</sellmeier>
+	<sellmeier>
+		<B>2.33730863</B>
+		<C>182.66818</C>
+	</sellmeier>	
+</material>
